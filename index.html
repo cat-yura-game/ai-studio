@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#ffffff" />
+    <meta name="description" content="Удобный чат с несколькими ИИ-моделями." />
+    <title>Чат с ИИ</title>
+    <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <svg class="icon-library" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+      <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16" /></symbol>
+      <symbol id="i-panel" viewBox="0 0 24 24"><rect x="3.5" y="4" width="17" height="16" rx="3"/><path d="M9 4v16"/></symbol>
+      <symbol id="i-pencil" viewBox="0 0 24 24"><path d="m13.5 6.5 4 4M4 20l4.2-.9L19 8.3a2.8 2.8 0 0 0-4-4L4.2 15.1 4 20Z"/></symbol>
+      <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.8" cy="10.8" r="6.2"/><path d="m15.4 15.4 4.6 4.6"/></symbol>
+      <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m7 10 5 5 5-5"/></symbol>
+      <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+      <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M12 19V5m0 0-5 5m5-5 5 5"/></symbol>
+      <symbol id="i-stop" viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="1.5" fill="currentColor" stroke="none"/></symbol>
+      <symbol id="i-spark" viewBox="0 0 24 24"><path d="m12 2 1.7 6.3L20 10l-6.3 1.7L12 18l-1.7-6.3L4 10l6.3-1.7L12 2ZM19 17l.6 1.4L21 19l-1.4.6L19 21l-.6-1.4L17 19l1.4-.6L19 17Z"/></symbol>
+      <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></symbol>
+      <symbol id="i-check" viewBox="0 0 24 24"><path d="m4.5 12.5 5 5 10-11"/></symbol>
+      <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.2 6M20 4v7h-7"/></symbol>
+      <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3m3 0-1 13H7L6 7m4 4v5m4-5v5"/></symbol>
+      <symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1" fill="currentColor"/><circle cx="12" cy="12" r="1" fill="currentColor"/><circle cx="19" cy="12" r="1" fill="currentColor"/></symbol>
+      <symbol id="i-settings" viewBox="0 0 24 24"><path d="M10 3h4l.7 2.2 2 .9 2.1-1 2.1 3.4-1.6 1.7.1 2 1.5 1.6-2.1 3.4-2.1-.9-2 .9L14 20h-4l-.7-2.2-2-.9-2.1.9-2.1-3.4 1.5-1.6.1-2-1.6-1.7 2.1-3.4 2.1 1 2-.9L10 3Z"/><circle cx="12" cy="11.5" r="3"/></symbol>
+      <symbol id="i-close" viewBox="0 0 24 24"><path d="M5 5 19 19M19 5 5 19"/></symbol>
+      <symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.4 4 5.4 4 9s-1.5 6.6-4 9c-2.5-2.4-4-5.4-4-9s1.5-6.6 4-9Z"/></symbol>
+    </svg>
+
+    <div class="app-shell" id="appShell">
+      <aside class="sidebar" id="sidebar" aria-label="Боковая панель">
+        <div class="sidebar-top">
+          <div class="sidebar-toolbar">
+            <button class="icon-button sidebar-collapse" id="sidebarToggle" title="Скрыть панель" aria-label="Скрыть панель"><svg><use href="#i-panel"/></svg></button>
+            <button class="icon-button" id="newChatIcon" title="Новый чат" aria-label="Новый чат"><svg><use href="#i-pencil"/></svg></button>
+          </div>
+          <button class="sidebar-action" id="newChatButton"><svg><use href="#i-pencil"/></svg><span>Новый чат</span></button>
+          <button class="sidebar-action" id="temporaryChatButton"><svg><use href="#i-spark"/></svg><span>Временный чат</span></button>
+          <button class="sidebar-action" id="searchButton"><svg><use href="#i-search"/></svg><span>Поиск чатов</span></button>
+        </div>
+        <div class="sidebar-history">
+          <div class="history-heading">Ваши чаты</div>
+          <div id="chatList" class="chat-list"></div>
+        </div>
+        <div class="sidebar-bottom">
+          <button class="quota-card" id="quotaCard" type="button"><div class="quota-head"><span>Дневной лимит</span><strong id="quotaPercent">100%</strong></div><div class="quota-track"><div class="quota-fill" id="quotaFill"></div></div><small id="quotaText">30 из 30 запросов осталось</small></button>
+          <button class="profile-button" id="settingsButton">
+            <span class="avatar">ИИ</span>
+            <span class="profile-copy"><strong>Личный профиль</strong><small id="planLabel">Деморежим</small></span>
+            <svg><use href="#i-more"/></svg>
+          </button>
+        </div>
+      </aside>
+
+      <div class="mobile-scrim" id="mobileScrim"></div>
+
+      <main class="main-panel">
+        <header class="topbar">
+          <button class="icon-button mobile-menu" id="mobileMenu" title="Открыть меню" aria-label="Открыть меню"><svg><use href="#i-menu"/></svg></button>
+          <button class="icon-button desktop-open" id="desktopOpen" title="Открыть панель" aria-label="Открыть панель"><svg><use href="#i-panel"/></svg></button>
+          <div class="model-control">
+            <button class="model-trigger" id="modelTrigger" aria-expanded="false" aria-haspopup="listbox"><span id="selectedModelName">GPT-6 Luna</span><svg><use href="#i-chevron"/></svg></button>
+            <div class="model-menu hidden" id="modelMenu" role="listbox" aria-label="Выбор модели"></div>
+          </div>
+          <span class="topbar-spacer"></span>
+          <span class="mode-pill" id="modePill">Бета</span>
+          <button class="icon-button top-settings" id="topSettings" title="Настройки" aria-label="Настройки"><svg><use href="#i-settings"/></svg></button>
+        </header>
+
+        <section class="conversation" id="conversation" aria-live="polite">
+          <div class="welcome" id="welcome">
+            <div class="welcome-mark" aria-hidden="true"><svg><use href="#i-spark"/></svg></div>
+            <h1>С чего начнём?</h1>
+            <p id="welcomeText">Выберите модель и напишите сообщение.</p>
+            <div class="suggestions" id="suggestions">
+              <button class="suggestion" data-prompt="Помоги составить план изучения английского языка на месяц">Составить план обучения <span>↗</span></button>
+              <button class="suggestion" data-prompt="Объясни простыми словами, как работает искусственный интеллект">Объяснить сложную тему <span>↗</span></button>
+              <button class="suggestion" data-prompt="Предложи пять идей для моего нового проекта">Придумать идеи <span>↗</span></button>
+              <button class="suggestion" data-prompt="Помоги написать вежливое деловое письмо">Написать письмо <span>↗</span></button>
+            </div>
+          </div>
+          <div class="messages hidden" id="messages"></div>
+        </section>
+
+        <div class="composer-area">
+          <div class="composer-wrap">
+            <form class="composer" id="composerForm">
+              <div class="attachments" id="attachments"></div>
+              <label for="promptInput" class="sr-only">Сообщение</label>
+              <textarea id="promptInput" placeholder="Спросите что-нибудь" rows="1" maxlength="12000"></textarea>
+              <div class="composer-bottom">
+                <div class="composer-left"><button class="attach-button" id="attachButton" type="button" aria-label="Прикрепить файл" title="Прикрепить файл"><svg><use href="#i-plus"/></svg></button><label class="thinking-picker"><svg><use href="#i-spark"/></svg><select id="thinkingSelect" aria-label="Глубина размышления"></select></label><span class="composer-hint" id="composerHint">Enter — отправить · Shift+Enter — новая строка</span></div>
+                <button class="send-button" id="sendButton" type="submit" aria-label="Отправить сообщение" title="Отправить сообщение"><svg><use href="#i-arrow"/></svg></button>
+              </div>
+            </form>
+            <input id="fileInput" type="file" multiple hidden />
+            <p class="disclaimer">Ответы моделей могут содержать ошибки. Проверяйте важную информацию.</p>
+          </div>
+        </div>
+      </main>
+    </div>
+
+    <dialog id="settingsDialog" class="settings-dialog">
+      <form method="dialog" class="dialog-head"><h2>Настройки</h2><button class="icon-button" aria-label="Закрыть"><svg><use href="#i-close"/></svg></button></form>
+      <div class="dialog-body">
+        <div class="setting-block"><div><strong>Режим подключения</strong><p id="connectionDescription">Деморежим. Реальные модели пока не подключены.</p></div><span class="status-dot" id="connectionDot"></span></div>
+        <label class="field-label" for="defaultModelSelect">Модель по умолчанию для новых чатов</label>
+        <select class="text-field" id="defaultModelSelect"><option value="gpt-6-luna">GPT-6 Luna</option><option value="gemini-3.8-flash">Gemini 3.8 Flash</option></select>
+        <div class="dialog-divider"></div>
+        <h3 class="section-heading">Персонализация</h3>
+        <label class="field-label" for="displayNameInput">Ваше имя</label>
+        <input class="text-field" id="displayNameInput" type="text" maxlength="80" placeholder="Как к вам обращаться" />
+        <label class="field-label" for="aboutTextInput">О себе</label>
+        <textarea class="text-field about-field" id="aboutTextInput" maxlength="1000" placeholder="Что модели стоит знать о вас"></textarea>
+        <label class="check-row"><input id="memoryEnabledInput" type="checkbox" checked /> Использовать память из других чатов</label>
+        <p class="field-note">Модель сможет учитывать подходящие фрагменты сохранённых диалогов. Временные чаты в память не входят.</p>
+        <div class="dialog-divider"></div>
+        <label class="field-label" for="accessCodeInput">Личная ссылка доступа</label>
+        <input class="text-field" id="accessCodeInput" type="password" placeholder="Вставьте личную ссылку или её код" autocomplete="off" />
+        <p class="field-note">Вставьте ссылку один раз. Браузер запомнит доступ к вашим чатам и лимиту.</p>
+        <button class="primary-button" id="saveSettings" type="button">Сохранить</button>
+        <a class="admin-link hidden" id="adminLink" href="./admin.html">Открыть админку</a>
+        <div class="dialog-divider"></div>
+        <button class="danger-button" id="clearChats" type="button"><svg><use href="#i-trash"/></svg> Удалить все чаты</button>
+      </div>
+    </dialog>
+
+    <dialog id="limitsDialog" class="settings-dialog">
+      <form method="dialog" class="dialog-head"><h2>Лимиты</h2><button class="icon-button" aria-label="Закрыть"><svg><use href="#i-close"/></svg></button></form>
+      <div class="dialog-body">
+        <div class="limits-number" id="limitsNumber">30 / 30</div>
+        <p class="limits-caption">запросов осталось сегодня</p>
+        <div class="quota-track limits-track"><div class="quota-fill" id="limitsFill"></div></div>
+        <p class="field-note" id="limitsResetTime">Лимит обновляется каждый день в 00:00 UTC.</p>
+        <div class="dialog-divider"></div>
+        <div class="reset-heading"><strong>Бесплатные сбросы</strong><span id="resetBalance">0 из 3</span></div>
+        <p class="field-note" id="nextResetText">Один сброс начисляется каждые 7 дней, максимум 3 в запасе.</p>
+        <button class="primary-button" id="useResetButton" type="button">Сбросить дневной лимит</button>
+      </div>
+    </dialog>
+
+    <dialog id="searchDialog" class="search-dialog">
+      <div class="search-head"><svg><use href="#i-search"/></svg><input id="searchInput" type="search" placeholder="Поиск по чатам" autocomplete="off" /><button class="icon-button" id="closeSearch" aria-label="Закрыть"><svg><use href="#i-close"/></svg></button></div>
+      <div id="searchResults" class="search-results"></div>
+    </dialog>
+
+    <div class="toast" id="toast" role="status"></div>
+    <script src="./config.js"></script>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

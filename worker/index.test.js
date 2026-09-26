@@ -1,0 +1,185 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { DatabaseSync } from "node:sqlite";
+import worker from "./index.js";
+
+function database() {
+  const sqlite = new DatabaseSync(":memory:");
+  sqlite.exec(`
+    CREATE TABLE users (id TEXT PRIMARY KEY, token_hash TEXT UNIQUE, role TEXT DEFAULT 'user', display_name TEXT DEFAULT '', about_text TEXT DEFAULT '', default_model TEXT DEFAULT 'gpt-6-luna', memory_enabled INTEGER DEFAULT 1, reset_balance INTEGER DEFAULT 1, reset_last_grant_at INTEGER, created_at INTEGER);
+    CREATE TABLE settings (id INTEGER PRIMARY KEY, daily_limit INTEGER, reset_interval_days INTEGER, reset_cap INTEGER, reset_grant_amount INTEGER);
+    INSERT INTO settings VALUES (1, 30, 7, 3, 1);
+    CREATE TABLE chats (id TEXT PRIMARY KEY, user_id TEXT, title TEXT, model TEXT, messages_json TEXT, updated_at INTEGER);
+    CREATE TABLE usage (user_id TEXT, day TEXT, count INTEGER, PRIMARY KEY(user_id,day));
+    CREATE TABLE files (id TEXT PRIMARY KEY, user_id TEXT, chat_id TEXT, name TEXT, mime TEXT, size INTEGER, r2_key TEXT, created_at INTEGER);
+  `);
+  return {
+    sqlite,
+    prepare(sql) {
+      const statement = sqlite.prepare(sql);
+      let args = [];
+      const self = {
+        bind(...values) { args = values; return self; },
+        async first() { return statement.get(...args) || null; },
+        async all() { return { results: statement.all(...args) }; },
+        async run() { return statement.run(...args); },
+      };
+      return self;
+    },
+  };
+}
+
+function setupUser(db, id, token) {
+  const now = Date.now();
+  db.sqlite.prepare("INSERT INTO users (id, token_hash, reset_last_grant_at, created_at) VALUES (?, ?, ?, ?)").run(id, createHash("sha256").update(token).digest("hex"), now, now);
+}
+
+function makeRequest(path, token, method = "GET", body = null) {
+  return new Request(`https://api.example.test${path}`, {
+    method,
+    headers: { Origin: "https://site.example.test", Authorization: `Bearer ${token}`, ...(body ? { "Content-Type": "application/json" } : {}) },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+}
+
+const TOKEN_A = "a".repeat(43);
+const TOKEN_B = "b".repeat(43);
+const env = (db) => ({ DB: db, ALLOWED_ORIGIN: "https://site.example.test", OPENAI_API_KEY: "test-openai", GEMINI_API_KEY: "test-gemini" });
+
+test("personal links isolate chats and share daily quota", async (context) => {
+  const db = database();
+  setupUser(db, "user-a", TOKEN_A);
+  setupUser(db, "user-b", TOKEN_B);
+  const seen = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, options) => {
+    seen.push({ url, body: JSON.parse(options.body) });
+    return Response.json({ output: [{ content: [{ type: "output_text", text: "Ответ" }] }] });
+  };
+  context.after(() => { globalThis.fetch = originalFetch; db.sqlite.close(); });
+
+  const unauthorized = await worker.fetch(makeRequest("/api/me", "z".repeat(43)), env(db));
+  assert.equal(unauthorized.status, 401);
+
+  const first = await worker.fetch(makeRequest("/api/chat", TOKEN_A, "POST", { chatId: "local-id", model: "gpt-6-luna", thinking: "high", content: "Привет", files: [] }), env(db));
+  assert.equal(first.status, 200);
+  const { chatId } = await first.json();
+  assert.notEqual(chatId, "local-id");
+  assert.equal(seen[0].body.reasoning.effort, "high");
+
+  const second = await worker.fetch(makeRequest("/api/chat", TOKEN_A, "POST", { chatId, model: "gpt-6-luna", thinking: "medium", content: "Продолжи", files: [] }), env(db));
+  assert.equal(second.status, 200);
+  assert.equal(seen[1].body.input[0].content, "Привет");
+  assert.equal(seen[1].body.input[1].content, "Ответ");
+
+  const aChats = await (await worker.fetch(makeRequest("/api/chats", TOKEN_A), env(db))).json();
+  const bChats = await (await worker.fetch(makeRequest("/api/chats", TOKEN_B), env(db))).json();
+  assert.equal(aChats.chats.length, 1);
+  assert.equal(bChats.chats.length, 0);
+  assert.equal((await (await worker.fetch(makeRequest("/api/me", TOKEN_A), env(db))).json()).remaining, 28);
+  assert.equal((await (await worker.fetch(makeRequest("/api/me", TOKEN_B), env(db))).json()).remaining, 30);
+
+  const foreign = await worker.fetch(makeRequest("/api/chat", TOKEN_B, "POST", { chatId, model: "gpt-6-luna", thinking: "medium", content: "Чужой чат", files: [] }), env(db));
+  assert.equal(foreign.status, 200);
+  assert.notEqual((await foreign.json()).chatId, chatId);
+});
+
+test("quota stops the 31st request and invalid files do not use quota", async (context) => {
+  const db = database();
+  setupUser(db, "user-a", TOKEN_A);
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => { calls++; return Response.json({ candidates: [{ content: { parts: [{ text: "Ок" }] } }] }); };
+  context.after(() => { globalThis.fetch = originalFetch; db.sqlite.close(); });
+  const bad = await worker.fetch(makeRequest("/api/chat", TOKEN_A, "POST", { model: "gemini-3.8-flash", thinking: "none", content: "Привет", files: [] }), env(db));
+  assert.equal(bad.status, 400);
+  const badFile = await worker.fetch(makeRequest("/api/chat", TOKEN_A, "POST", { model: "gemini-3.8-flash", thinking: "medium", content: "Привет", files: [{ name: "archive.zip", type: "application/zip", size: 2, data: "YWE=" }] }), env(db));
+  assert.equal(badFile.status, 400);
+  for (let i = 0; i < 30; i++) {
+    const response = await worker.fetch(makeRequest("/api/chat", TOKEN_A, "POST", { model: "gemini-3.8-flash", thinking: "low", content: "Привет", files: [] }), env(db));
+    assert.equal(response.status, 200);
+  }
+  const blocked = await worker.fetch(makeRequest("/api/chat", TOKEN_A, "POST", { model: "gemini-3.8-flash", thinking: "low", content: "Ещё", files: [] }), env(db));
+  assert.equal(blocked.status, 429);
+  assert.equal(calls, 30);
+  assert.equal((await (await worker.fetch(makeRequest("/api/me", TOKEN_A), env(db))).json()).remaining, 0);
+  const reset = await worker.fetch(makeRequest("/api/reset", TOKEN_A, "POST", {}), env(db));
+  assert.equal(reset.status, 200);
+  assert.equal((await reset.json()).remaining, 30);
+  assert.equal((await (await worker.fetch(makeRequest("/api/me", TOKEN_A), env(db))).json()).resetBalance, 0);
+});
+
+test("temporary chat uses quota without saving, profile and memory reach the provider", async (context) => {
+  const db = database();
+  setupUser(db, "user-a", TOKEN_A);
+  const seen = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (_url, options) => { seen.push(JSON.parse(options.body)); return Response.json({ output: [{ content: [{ type: "output_text", text: "Запомнил" }] }] }); };
+  context.after(() => { globalThis.fetch = originalFetch; db.sqlite.close(); });
+
+  const profile = await worker.fetch(makeRequest("/api/profile", TOKEN_A, "PUT", { displayName: "Юра", aboutText: "Люблю программировать", defaultModel: "gemini-3.8-flash", memoryEnabled: true }), env(db));
+  assert.equal(profile.status, 200);
+  assert.equal((await (await worker.fetch(makeRequest("/api/profile", TOKEN_A), env(db))).json()).defaultModel, "gemini-3.8-flash");
+  const first = await worker.fetch(makeRequest("/api/chat", TOKEN_A, "POST", { model: "gpt-6-luna", thinking: "medium", content: "Мой проект про космос", files: [] }), env(db));
+  assert.equal(first.status, 200);
+  const second = await worker.fetch(makeRequest("/api/chat", TOKEN_A, "POST", { model: "gpt-6-luna", thinking: "medium", content: "Что с проектом про космос?", files: [] }), env(db));
+  assert.equal(second.status, 200);
+  assert.match(seen[1].instructions, /Юра/);
+  assert.match(seen[1].instructions, /проект про космос/);
+  const temporary = await worker.fetch(makeRequest("/api/chat", TOKEN_A, "POST", { temporary: true, model: "gpt-6-luna", thinking: "medium", content: "Временный секрет", files: [], history: [] }), env(db));
+  assert.equal(temporary.status, 200);
+  assert.equal((await (await worker.fetch(makeRequest("/api/chats", TOKEN_A), env(db))).json()).chats.length, 2);
+  assert.equal((await (await worker.fetch(makeRequest("/api/me", TOKEN_A), env(db))).json()).remaining, 27);
+  assert.doesNotMatch(seen[2].instructions, /проект про космос/);
+});
+
+test("admin can change reset policy and create personal links", async (context) => {
+  const db = database();
+  setupUser(db, "admin", TOKEN_A);
+  db.sqlite.prepare("UPDATE users SET role='admin' WHERE id='admin'").run();
+  setupUser(db, "user-b", TOKEN_B);
+  context.after(() => db.sqlite.close());
+  const denied = await worker.fetch(makeRequest("/api/admin/settings", TOKEN_B), env(db));
+  assert.equal(denied.status, 403);
+  const changed = await worker.fetch(makeRequest("/api/admin/settings", TOKEN_A, "PUT", { dailyLimit: 35, resetIntervalDays: 2, resetCap: 5, resetGrantAmount: 2 }), env(db));
+  assert.equal(changed.status, 200);
+  assert.equal((await (await worker.fetch(makeRequest("/api/me", TOKEN_B), env(db))).json()).limit, 35);
+  const invite = await worker.fetch(makeRequest("/api/admin/invite", TOKEN_A, "POST", {}), env(db));
+  assert.equal(invite.status, 200);
+  const created = await invite.json();
+  assert.equal((await worker.fetch(makeRequest("/api/me", created.token), env(db))).status, 200);
+});
+
+test("attachments persist for their owner and are removed with the chat", async (context) => {
+  const db = database();
+  setupUser(db, "user-a", TOKEN_A);
+  setupUser(db, "user-b", TOKEN_B);
+  const objects = new Map();
+  const files = {
+    async put(key, data) { objects.set(key, data); },
+    async get(key) { const data = objects.get(key); return data ? { body: data, async arrayBuffer() { return data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength); } } : null; },
+    async delete(key) { objects.delete(key); },
+  };
+  const originalFetch = globalThis.fetch;
+  const seen = [];
+  globalThis.fetch = async (_url, options) => { seen.push(JSON.parse(options.body)); return Response.json({ output: [{ content: [{ type: "output_text", text: "Файл прочитан" }] }] }); };
+  context.after(() => { globalThis.fetch = originalFetch; db.sqlite.close(); });
+  const environment = { ...env(db), FILES: files };
+  const upload = await worker.fetch(makeRequest("/api/chat", TOKEN_A, "POST", { model: "gpt-6-luna", thinking: "medium", content: "Прочти", files: [{ name: "note.txt", type: "text/plain", size: 6, data: "0L/RgNC40LLQtdGC" }] }), environment);
+  assert.equal(upload.status, 200);
+  const result = await upload.json();
+  assert.equal(result.files.length, 1);
+  const path = `/api/files/${result.files[0].id}`;
+  assert.equal((await worker.fetch(makeRequest(path, TOKEN_B), environment)).status, 404);
+  const download = await worker.fetch(makeRequest(path, TOKEN_A), environment);
+  assert.equal(download.status, 200);
+  assert.equal(await download.text(), "привет");
+  assert.equal(objects.size, 1);
+  const followup = await worker.fetch(makeRequest("/api/chat", TOKEN_A, "POST", { chatId: result.chatId, model: "gpt-6-luna", thinking: "medium", content: "Что было в файле?", files: [] }), environment);
+  assert.equal(followup.status, 200);
+  assert.equal(seen[1].input.at(-1).content[1].filename, "note.txt");
+  const removed = await worker.fetch(makeRequest(`/api/chats/${result.chatId}`, TOKEN_A, "DELETE"), environment);
+  assert.equal(removed.status, 200);
+  assert.equal(objects.size, 0);
+});

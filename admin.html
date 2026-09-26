@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#f7f7f7" />
+    <title>Админка · Чат с ИИ</title>
+    <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="./styles.css" />
+    <link rel="stylesheet" href="./admin.css" />
+  </head>
+  <body class="admin-page">
+    <main class="admin-container">
+      <header class="admin-header"><a href="./">← Чат</a><span>Бета · управление</span></header>
+      <h1>Админка</h1>
+      <p class="admin-intro" id="status">Подключаюсь к Worker…</p>
+      <section class="admin-card hidden" id="settingsCard">
+        <h2>Лимиты и сбросы</h2>
+        <p>Правила применяются ко всем пользователям.</p>
+        <form id="policyForm" class="admin-form">
+          <label>Запросов в сутки<input id="dailyLimit" type="number" min="1" max="200" required /></label>
+          <label>Сброс начисляется раз в (дней)<input id="resetIntervalDays" type="number" min="1" max="365" required /></label>
+          <label>Максимум сбросов в запасе<input id="resetCap" type="number" min="1" max="20" required /></label>
+          <label>Сбросов за одно начисление<input id="resetGrantAmount" type="number" min="1" max="10" required /></label>
+          <button class="primary-button" type="submit">Сохранить правила</button>
+        </form>
+      </section>
+      <section class="admin-card hidden" id="usersCard">
+        <div class="admin-card-head"><div><h2>Личные ссылки</h2><p>Каждая ссылка открывает только чаты своего пользователя.</p></div><button class="outline-button" id="createInvite" type="button">Создать ссылку</button></div>
+        <div class="invite-box hidden" id="inviteBox"><strong>Новая личная ссылка</strong><input id="inviteOutput" readonly /><button class="outline-button" id="copyInvite" type="button">Скопировать</button><small>Передайте ссылку пользователю приватно. Здесь она показывается только сейчас.</small></div>
+        <div class="admin-users" id="usersList"></div>
+      </section>
+    </main>
+    <script src="./config.js"></script>
+    <script type="module" src="./admin.js"></script>
+  </body>
+</html>
