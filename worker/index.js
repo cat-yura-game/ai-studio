@@ -23,6 +23,18 @@ function base64FromBytes(bytes) {
   for (let i = 0; i < bytes.length; i += 8192) binary += String.fromCharCode(...bytes.subarray(i, i + 8192));
   return btoa(binary);
 }
+function fileStore(env) { return env.FILE_KV || env.FILES; }
+async function putFile(env, key, bytes, mime) {
+  if (env.FILE_KV) return env.FILE_KV.put(key, bytes);
+  return env.FILES.put(key, bytes, { httpMetadata: { contentType: mime } });
+}
+async function getFile(env, key) {
+  if (env.FILE_KV) {
+    const data = await env.FILE_KV.get(key, "arrayBuffer");
+    return data ? { body: data, async arrayBuffer() { return data; } } : null;
+  }
+  return env.FILES.get(key);
+}
 function validateFiles(files, model) {
   if (!Array.isArray(files) || files.length > 3) throw new Error("Можно прикрепить до 3 файлов.");
   for (const file of files) {
@@ -34,19 +46,19 @@ function validateFiles(files, model) {
 }
 async function persistFiles(env, userId, chatId, files) {
   if (!files.length) return [];
-  if (!env.FILES) throw new Error("Хранилище файлов R2 ещё не подключено.");
+  if (!fileStore(env)) throw new Error("Хранилище файлов ещё не подключено.");
   const stored = [];
   try {
     for (const file of files) {
       const fileId = crypto.randomUUID();
       const key = `${userId}/${chatId}/${fileId}`;
-      await env.FILES.put(key, bytesFromBase64(file.data), { httpMetadata: { contentType: file.type } });
+      await putFile(env, key, bytesFromBase64(file.data), file.type);
       stored.push({ id: fileId, name: file.name.slice(0, 200), type: file.type, size: file.size, key });
       await env.DB.prepare("INSERT INTO files (id, user_id, chat_id, name, mime, size, r2_key, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").bind(fileId, userId, chatId, file.name.slice(0, 200), file.type, file.size, key, Date.now()).run();
     }
     return stored;
   } catch (error) {
-    await Promise.allSettled(stored.map((file) => env.FILES.delete(file.key)));
+    await Promise.allSettled(stored.map((file) => fileStore(env).delete(file.key)));
     await Promise.allSettled(stored.map((file) => env.DB.prepare("DELETE FROM files WHERE id = ? AND user_id = ?").bind(file.id, userId).run()));
     throw error;
   }
@@ -54,12 +66,12 @@ async function persistFiles(env, userId, chatId, files) {
 async function removeFiles(env, userId, chatId = null) {
   const query = chatId ? "SELECT id, r2_key FROM files WHERE user_id = ? AND chat_id = ?" : "SELECT id, r2_key FROM files WHERE user_id = ?";
   const { results } = await env.DB.prepare(query).bind(...(chatId ? [userId, chatId] : [userId])).all();
-  if (env.FILES) await Promise.allSettled(results.map((file) => env.FILES.delete(file.r2_key)));
+  if (fileStore(env)) await Promise.allSettled(results.map((file) => fileStore(env).delete(file.r2_key)));
   if (chatId) await env.DB.prepare("DELETE FROM files WHERE user_id = ? AND chat_id = ?").bind(userId, chatId).run();
   else await env.DB.prepare("DELETE FROM files WHERE user_id = ?").bind(userId).run();
 }
 async function priorFilesForContext(env, userId, history, prompt) {
-  if (!env.FILES) return [];
+  if (!fileStore(env)) return [];
   const listed = history.flatMap((entry) => entry.role === "user" ? entry.files || [] : []).filter((file) => file.id);
   if (!listed.length) return [];
   const query = prompt.toLocaleLowerCase();
@@ -69,7 +81,7 @@ async function priorFilesForContext(env, userId, history, prompt) {
   for (const file of chosen) {
     const record = await env.DB.prepare("SELECT name, mime, size, r2_key FROM files WHERE id = ? AND user_id = ?").bind(file.id, userId).first();
     if (!record || record.size > MAX_FILE_BYTES) continue;
-    const object = await env.FILES.get(record.r2_key);
+    const object = await getFile(env, record.r2_key);
     if (!object) continue;
     const bytes = new Uint8Array(await object.arrayBuffer());
     result.push({ name: record.name, type: record.mime, size: record.size, data: base64FromBytes(bytes) });
@@ -259,10 +271,10 @@ async function handleApi(request, env) {
   }
   const fileGet = /^\/api\/files\/([A-Za-z0-9-]{1,64})$/.exec(path);
   if (request.method === "GET" && fileGet) {
-    if (!env.FILES) return safeError("Хранилище файлов недоступно.", 503);
+    if (!fileStore(env)) return safeError("Хранилище файлов недоступно.", 503);
     const record = await env.DB.prepare("SELECT name, mime, r2_key FROM files WHERE id = ? AND user_id = ?").bind(fileGet[1], user.id).first();
     if (!record) return safeError("Файл не найден.", 404);
-    const object = await env.FILES.get(record.r2_key);
+    const object = await getFile(env, record.r2_key);
     if (!object) return safeError("Файл не найден.", 404);
     return new Response(object.body, { headers: { "Content-Type": record.mime || "application/octet-stream", "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(record.name)}`, "Cache-Control": "private, no-store" } });
   }
@@ -306,7 +318,7 @@ async function handleApi(request, env) {
       return json({ chatId, answer, files: publicFiles, remaining: Math.max(0, settings.daily_limit - count) });
     } catch (error) {
       if (stored.length) {
-        await Promise.allSettled(stored.map((file) => env.FILES.delete(file.key)));
+        await Promise.allSettled(stored.map((file) => fileStore(env).delete(file.key)));
         await Promise.allSettled(stored.map((file) => env.DB.prepare("DELETE FROM files WHERE id = ? AND user_id = ?").bind(file.id, user.id).run()));
       }
       await releaseRequest(env.DB, user.id);
@@ -319,10 +331,10 @@ async function handleApi(request, env) {
 export default {
   async fetch(request, env) {
     const origin = request.headers.get("Origin");
-    const allowedOrigin = env.ALLOWED_ORIGIN;
-    if (!allowedOrigin) return safeError("ALLOWED_ORIGIN не настроен.", 503);
-    if (origin && origin !== allowedOrigin && origin !== "http://localhost:4173") return safeError("Этот сайт не имеет доступа к API.", 403);
-    const cors = { "Access-Control-Allow-Origin": origin || allowedOrigin, "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS", "Access-Control-Allow-Headers": "Authorization, Content-Type", "Vary": "Origin" };
+    const allowedOrigins = String(env.ALLOWED_ORIGIN || "").split(",").map((value) => value.trim()).filter(Boolean);
+    if (!allowedOrigins.length) return safeError("ALLOWED_ORIGIN не настроен.", 503);
+    if (origin && !allowedOrigins.includes(origin) && origin !== "http://localhost:4173") return safeError("Этот сайт не имеет доступа к API.", 403);
+    const cors = { "Access-Control-Allow-Origin": origin || allowedOrigins[0], "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS", "Access-Control-Allow-Headers": "Authorization, Content-Type", "Vary": "Origin" };
     if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: cors });
     let response;
     try { response = await handleApi(request, env); }

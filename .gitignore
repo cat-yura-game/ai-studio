@@ -1,4 +1,6 @@
 node_modules/
+.npm-cache/
+.local-config/
 .dev.vars
 worker/.dev.vars
 worker/wrangler.toml

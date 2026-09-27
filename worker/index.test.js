@@ -158,14 +158,14 @@ test("attachments persist for their owner and are removed with the chat", async 
   const objects = new Map();
   const files = {
     async put(key, data) { objects.set(key, data); },
-    async get(key) { const data = objects.get(key); return data ? { body: data, async arrayBuffer() { return data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength); } } : null; },
+    async get(key, type) { assert.equal(type, "arrayBuffer"); const data = objects.get(key); return data ? data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) : null; },
     async delete(key) { objects.delete(key); },
   };
   const originalFetch = globalThis.fetch;
   const seen = [];
   globalThis.fetch = async (_url, options) => { seen.push(JSON.parse(options.body)); return Response.json({ output: [{ content: [{ type: "output_text", text: "Файл прочитан" }] }] }); };
   context.after(() => { globalThis.fetch = originalFetch; db.sqlite.close(); });
-  const environment = { ...env(db), FILES: files };
+  const environment = { ...env(db), FILE_KV: files };
   const upload = await worker.fetch(makeRequest("/api/chat", TOKEN_A, "POST", { model: "gpt-6-luna", thinking: "medium", content: "Прочти", files: [{ name: "note.txt", type: "text/plain", size: 6, data: "0L/RgNC40LLQtdGC" }] }), environment);
   assert.equal(upload.status, 200);
   const result = await upload.json();
