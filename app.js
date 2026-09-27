@@ -1,3 +1,5 @@
+import { renderMarkdown } from "./markdown.js";
+
 const MODELS = [
   { id: "gpt-6-luna", name: "GPT-6 Luna", provider: "OpenAI", description: "Быстрые повседневные задачи" },
   { id: "gemini-3.8-flash", name: "Gemini 3.8 Flash", provider: "Google", description: "Быстрые ответы" },
@@ -209,28 +211,26 @@ function citationUrl(value) {
   try { const url = new URL(value); return ["https:", "http:"].includes(url.protocol) ? url.href : ""; }
   catch { return ""; }
 }
-function renderCitedAnswer(bubble, message) {
-  const content = String(message.content || "");
-  const characters = Array.from(content);
+function renderAssistantAnswer(bubble, message) {
+  const characters = Array.from(String(message.content || ""));
   const citations = (Array.isArray(message.citations) ? message.citations : [])
     .map((item) => ({ ...item, safeUrl: citationUrl(item.url) }))
     .filter((item) => item.safeUrl);
-  let position = 0;
-  for (const item of [...citations].sort((a, b) => a.startIndex - b.startIndex)) {
-    if (!Number.isInteger(item.startIndex) || !Number.isInteger(item.endIndex) || item.startIndex < position || item.endIndex > characters.length || item.endIndex <= item.startIndex) continue;
-    bubble.append(document.createTextNode(characters.slice(position, item.startIndex).join("")));
-    const link = document.createElement("a");
-    link.className = "citation-link";
-    link.href = item.safeUrl;
+  for (const item of [...citations].sort((a, b) => b.endIndex - a.endIndex)) {
+    if (!Number.isInteger(item.startIndex) || !Number.isInteger(item.endIndex) || item.startIndex < 0 || item.endIndex > characters.length || item.endIndex <= item.startIndex) continue;
+    const citedText = characters.slice(item.startIndex, item.endIndex).join("");
+    if (/\]\(https?:\/\/[^)]+\)/i.test(citedText)) continue;
+    const safeUrl = item.safeUrl.replace(/\(/g, "%28").replace(/\)/g, "%29");
+    characters.splice(item.endIndex, 0, ...Array.from(` [источник](${safeUrl})`));
+  }
+  bubble.innerHTML = renderMarkdown(characters.join(""));
+  for (const link of bubble.querySelectorAll("a")) {
+    const safeUrl = citationUrl(link.getAttribute("href"));
+    if (!safeUrl) { link.replaceWith(document.createTextNode(link.textContent)); continue; }
+    link.href = safeUrl;
     link.target = "_blank";
     link.rel = "noopener noreferrer";
-    link.title = item.title || item.safeUrl;
-    const citedText = characters.slice(item.startIndex, item.endIndex).join("");
-    link.textContent = /^\(?\[([^\]]+)\]\(https?:\/\/[^)]+\)\)?$/.exec(citedText)?.[1] || citedText;
-    bubble.append(link);
-    position = item.endIndex;
   }
-  bubble.append(document.createTextNode(characters.slice(position).join("")));
   if (citations.length) {
     const sources = document.createElement("div");
     sources.className = "answer-sources";
@@ -278,7 +278,7 @@ function messageElement(message, modelName) {
   }
   const bubble = document.createElement("div");
   bubble.className = "message-bubble";
-  if (message.role === "assistant" && message.citations?.length) renderCitedAnswer(bubble, message);
+  if (message.role === "assistant") renderAssistantAnswer(bubble, message);
   else bubble.textContent = message.content;
   row.append(bubble);
   if (message.role === "assistant" && message.content) {
