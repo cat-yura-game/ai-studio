@@ -12,6 +12,7 @@ const state = {
   model: initialModel,
   defaultModel: initialModel,
   thinking: JSON.parse(localStorage.getItem("chat_thinking") || "{}"),
+  webSearch: localStorage.getItem("chat_web_search") === "true",
   chats: [],
   currentId: null,
   tempChat: null,
@@ -156,6 +157,7 @@ function renderModels() {
         $("modelTrigger").setAttribute("aria-expanded", "false");
         renderModels();
         renderThinking();
+        renderWebSearch();
         renderList();
         renderMessages();
       });
@@ -170,6 +172,13 @@ function renderThinking() {
   for (const [value, label] of choices) { const option = document.createElement("option"); option.value = value; option.textContent = label; select.append(option); }
   select.value = selectedThinking();
   select.disabled = !MODELS.some((model) => model.id === state.model);
+}
+function renderWebSearch() {
+  const button = $("webSearchToggle");
+  const available = state.connected && state.model === "gpt-6-luna";
+  button.disabled = !available;
+  button.setAttribute("aria-pressed", String(available && state.webSearch));
+  button.title = !state.connected ? "Войдите по личной ссылке" : available ? (state.webSearch ? "Выключить поиск в интернете" : "Включить поиск в интернете") : "Поиск пока недоступен для этой модели";
 }
 function renderList() {
   const list = $("chatList");
@@ -194,6 +203,47 @@ function renderList() {
     item.addEventListener("click", open);
     item.addEventListener("keydown", (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); open(); } });
     list.append(item);
+  }
+}
+function citationUrl(value) {
+  try { const url = new URL(value); return ["https:", "http:"].includes(url.protocol) ? url.href : ""; }
+  catch { return ""; }
+}
+function renderCitedAnswer(bubble, message) {
+  const content = String(message.content || "");
+  const characters = Array.from(content);
+  const citations = (Array.isArray(message.citations) ? message.citations : [])
+    .map((item) => ({ ...item, safeUrl: citationUrl(item.url) }))
+    .filter((item) => item.safeUrl);
+  let position = 0;
+  for (const item of [...citations].sort((a, b) => a.startIndex - b.startIndex)) {
+    if (!Number.isInteger(item.startIndex) || !Number.isInteger(item.endIndex) || item.startIndex < position || item.endIndex > characters.length || item.endIndex <= item.startIndex) continue;
+    bubble.append(document.createTextNode(characters.slice(position, item.startIndex).join("")));
+    const link = document.createElement("a");
+    link.className = "citation-link";
+    link.href = item.safeUrl;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    link.title = item.title || item.safeUrl;
+    const citedText = characters.slice(item.startIndex, item.endIndex).join("");
+    link.textContent = /^\(?\[([^\]]+)\]\(https?:\/\/[^)]+\)\)?$/.exec(citedText)?.[1] || citedText;
+    bubble.append(link);
+    position = item.endIndex;
+  }
+  bubble.append(document.createTextNode(characters.slice(position).join("")));
+  if (citations.length) {
+    const sources = document.createElement("div");
+    sources.className = "answer-sources";
+    sources.append(document.createTextNode("Источники: "));
+    for (const [index, item] of [...new Map(citations.map((entry) => [entry.safeUrl, entry])).values()].entries()) {
+      const link = document.createElement("a");
+      link.href = item.safeUrl;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      link.textContent = item.title || `Источник ${index + 1}`;
+      sources.append(link);
+    }
+    bubble.append(sources);
   }
 }
 function messageElement(message, modelName) {
@@ -228,7 +278,8 @@ function messageElement(message, modelName) {
   }
   const bubble = document.createElement("div");
   bubble.className = "message-bubble";
-  bubble.textContent = message.content;
+  if (message.role === "assistant" && message.citations?.length) renderCitedAnswer(bubble, message);
+  else bubble.textContent = message.content;
   row.append(bubble);
   if (message.role === "assistant" && message.content) {
     const actions = document.createElement("div");
@@ -273,7 +324,7 @@ function renderAttachments() {
     holder.append(chip);
   });
 }
-function renderAll() { renderModels(); renderThinking(); renderList(); renderMessages(); renderQuota(); renderAttachments(); updateSend(); }
+function renderAll() { renderModels(); renderThinking(); renderWebSearch(); renderList(); renderMessages(); renderQuota(); renderAttachments(); updateSend(); }
 function updateSend() {
   const ready = !!$("promptInput").value.trim() || state.files.length > 0;
   $("sendButton").classList.toggle("ready", ready || state.busy);
@@ -335,18 +386,20 @@ async function sendMessage() {
   renderAll();
   try {
     let answer;
+    let citations = [];
     {
       const previousUploads = temporary && !attached.length ? [...chat.messages].reverse().find((message) => message._uploads)?._uploads || [] : [];
       const modelAttachments = attached.length ? attached : previousUploads;
       const files = await Promise.all(modelAttachments.map(async (file) => ({ name: file.name, type: file.type || "application/octet-stream", size: file.size, data: await readFile(file) })));
-      const result = await api("/api/chat", { method: "POST", body: JSON.stringify({ chatId: temporary ? null : chat.id, temporary, history: temporary ? chat.messages.slice(0, -1).map(({ role, content }) => ({ role, content })) : undefined, model: chat.model, thinking: selectedThinking(), content, files }) });
+      const result = await api("/api/chat", { method: "POST", body: JSON.stringify({ chatId: temporary ? null : chat.id, temporary, history: temporary ? chat.messages.slice(0, -1).map(({ role, content }) => ({ role, content })) : undefined, model: chat.model, thinking: selectedThinking(), webSearch: chat.model === "gpt-6-luna" && state.webSearch, content, files }) });
       answer = result.answer;
+      citations = result.citations || [];
       state.remaining = result.remaining;
       chat.id = result.chatId;
       state.currentId = result.chatId;
       userMessage.files = result.files || userMessage.files;
     }
-    chat.messages.push({ role: "assistant", content: answer });
+    chat.messages.push({ role: "assistant", content: answer, citations });
     chat.updatedAt = Date.now();
   } catch (error) {
     chat.messages.pop();
@@ -395,6 +448,7 @@ $("mobileMenu").addEventListener("click", () => $("appShell").classList.add("mob
 $("mobileScrim").addEventListener("click", closeMobile);
 $("modelTrigger").addEventListener("click", () => { if (!state.connected) { openSettings(); return; } const open = $("modelMenu").classList.toggle("hidden"); $("modelTrigger").setAttribute("aria-expanded", String(!open)); });
 $("thinkingSelect").addEventListener("change", () => { state.thinking[state.model] = $("thinkingSelect").value; localStorage.setItem("chat_thinking", JSON.stringify(state.thinking)); });
+$("webSearchToggle").addEventListener("click", () => { if (state.model !== "gpt-6-luna") return; state.webSearch = !state.webSearch; localStorage.setItem("chat_web_search", String(state.webSearch)); renderWebSearch(); });
 document.addEventListener("click", (event) => { if (!event.target.closest(".model-control")) { $("modelMenu").classList.add("hidden"); $("modelTrigger").setAttribute("aria-expanded", "false"); } });
 $("settingsButton").addEventListener("click", openSettings);
 $("topSettings").addEventListener("click", openSettings);

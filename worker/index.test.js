@@ -217,3 +217,32 @@ test("removed models cannot spend a request or become the default", async () => 
   assert.equal((await profile.json()).defaultModel, "gpt-6-luna");
   db.sqlite.close();
 });
+
+test("web search is opt-in for Luna and preserves clickable citation data", async (context) => {
+  const db = database();
+  setupUser(db, "user-a", TOKEN_A);
+  const seen = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (_url, options) => {
+    seen.push(JSON.parse(options.body));
+    return Response.json({ output: [
+      { type: "web_search_call", status: "completed" },
+      { type: "message", content: [{ type: "output_text", text: "Ответ [1]", annotations: [{ type: "url_citation", start_index: 6, end_index: 9, url: "https://example.org/source", title: "Источник" }] }] },
+    ] });
+  };
+  context.after(() => { globalThis.fetch = originalFetch; db.sqlite.close(); });
+  const searched = await worker.fetch(makeRequest("/api/chat", TOKEN_A, "POST", { model: "gpt-6-luna", thinking: "medium", webSearch: true, content: "Найди новость", files: [] }), env(db));
+  assert.equal(searched.status, 200);
+  const result = await searched.json();
+  assert.deepEqual(seen[0].tools, [{ type: "web_search" }]);
+  assert.equal(seen[0].tool_choice, "required");
+  assert.deepEqual(result.citations, [{ startIndex: 6, endIndex: 9, url: "https://example.org/source", title: "Источник" }]);
+  const chats = await (await worker.fetch(makeRequest("/api/chats", TOKEN_A), env(db))).json();
+  assert.deepEqual(chats.chats[0].messages[1].citations, result.citations);
+  const blocked = await worker.fetch(makeRequest("/api/chat", TOKEN_A, "POST", { model: "gemini-3.8-flash", thinking: "medium", webSearch: true, content: "Найди новость", files: [] }), env(db));
+  assert.equal(blocked.status, 400);
+  assert.equal(db.sqlite.prepare("SELECT count FROM usage WHERE user_id = 'user-a'").get().count, 1);
+  const plain = await worker.fetch(makeRequest("/api/chat", TOKEN_A, "POST", { temporary: true, model: "gpt-6-luna", thinking: "medium", webSearch: false, content: "Привет", files: [] }), env(db));
+  assert.equal(plain.status, 200);
+  assert.equal(seen[1].tools, undefined);
+});

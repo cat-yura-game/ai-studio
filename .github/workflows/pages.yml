@@ -34,7 +34,7 @@ jobs:
           from pathlib import Path
           Path('_site/config.js').write_text('window.CHAT_API_URL = ' + json.dumps(os.environ['CHAT_API_URL']) + ';\n', encoding='utf-8')
           page = Path('_site/index.html')
-          page.write_text(page.read_text(encoding='utf-8').replace('./app.js"', './app.js?v=' + os.environ['GITHUB_SHA'] + '"'), encoding='utf-8')
+          page.write_text(page.read_text(encoding='utf-8').replace('./app.js"', './app.js?v=' + os.environ['GITHUB_SHA'] + '"').replace('./styles.css"', './styles.css?v=' + os.environ['GITHUB_SHA'] + '"'), encoding='utf-8')
           PY
       - uses: actions/upload-pages-artifact@v3
         with:

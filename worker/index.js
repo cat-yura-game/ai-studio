@@ -142,18 +142,32 @@ function openAiInput(history, message, files) {
   }
   return [...prior, { role: "user", content }];
 }
-async function callOpenAI(env, history, message, files, thinking, instructions) {
+async function callOpenAI(env, history, message, files, thinking, instructions, webSearch) {
   if (!env.OPENAI_API_KEY) throw new Error("Ключ OpenAI ещё не добавлен в Worker.");
   const response = await fetch("https://api.openai.com/v1/responses", {
     method: "POST",
     headers: { Authorization: `Bearer ${env.OPENAI_API_KEY}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ model: "gpt-6-luna", instructions, input: openAiInput(history, message, files), reasoning: { effort: thinking }, max_output_tokens: 8192, store: false }),
+    body: JSON.stringify({ model: "gpt-6-luna", instructions, input: openAiInput(history, message, files), reasoning: { effort: thinking }, max_output_tokens: 8192, store: false, ...(webSearch ? { tools: [{ type: "web_search" }], tool_choice: "required" } : {}) }),
   });
   const data = await response.json();
   if (!response.ok) throw new Error(data.error?.message || "OpenAI временно недоступен.");
-  const answer = (data.output || []).flatMap((item) => item.content || []).filter((item) => item.type === "output_text").map((item) => item.text).join("\n").trim();
-  if (!answer) throw new Error("Модель не вернула текстовый ответ. Попробуйте ещё раз.");
-  return answer;
+  const parts = (data.output || []).flatMap((item) => item.content || []).filter((item) => item.type === "output_text");
+  let answer = "";
+  const citations = [];
+  for (const part of parts) {
+    if (answer) answer += "\n";
+    const offset = Array.from(answer).length;
+    answer += part.text || "";
+    for (const annotation of part.annotations || []) {
+      if (annotation.type !== "url_citation" || !Number.isInteger(annotation.start_index) || !Number.isInteger(annotation.end_index)) continue;
+      let url;
+      try { url = new URL(annotation.url); } catch { continue; }
+      if (!["https:", "http:"].includes(url.protocol)) continue;
+      citations.push({ startIndex: offset + annotation.start_index, endIndex: offset + annotation.end_index, url: url.href, title: String(annotation.title || "").slice(0, 180) });
+    }
+  }
+  if (!answer.trim()) throw new Error("Модель не вернула текстовый ответ. Попробуйте ещё раз.");
+  return { answer, citations: citations.slice(0, 20) };
 }
 function geminiParts(message, files) {
   const parts = [{ text: message || "Проанализируй приложенный файл." }];
@@ -300,11 +314,13 @@ async function handleApi(request, env) {
     try { body = JSON.parse(raw); } catch { return safeError("Неверный формат запроса."); }
     const model = body.model;
     const thinking = body.thinking || "medium";
+    const webSearch = body.webSearch === true;
     const content = typeof body.content === "string" ? body.content.trim() : "";
     const files = body.files || [];
     const temporary = body.temporary === true;
     if (!ALLOWED_MODELS.has(model)) return safeError("Неизвестная модель.");
     if (!THINKING[model].has(thinking)) return safeError("Этот уровень размышления модель не поддерживает.");
+    if (webSearch && model !== "gpt-6-luna") return safeError("Поиск пока доступен только для GPT-6 Luna.");
     if (content.length > 12_000 || (!content && !files.length)) return safeError("Напишите сообщение или прикрепите файл.");
     try { validateFiles(files, model); } catch (error) { return safeError(error.message); }
     const requestedId = !temporary && typeof body.chatId === "string" && /^[A-Za-z0-9-]{1,64}$/.test(body.chatId) ? body.chatId : null;
@@ -323,13 +339,13 @@ async function handleApi(request, env) {
       const memory = !temporary && user.memory_enabled ? await memoryFor(env.DB, user.id, chatId, content) : "";
       const instructions = instructionsFor(user, memory);
       const modelFiles = files.length || temporary ? files : await priorFilesForContext(env, user.id, fullHistory, content);
-      const answer = model === "gpt-6-luna" ? await callOpenAI(env, history, content, modelFiles, thinking, instructions) : await callGemini(env, history, content, modelFiles, thinking, instructions);
+      const { answer, citations } = model === "gpt-6-luna" ? await callOpenAI(env, history, content, modelFiles, thinking, instructions, webSearch) : { answer: await callGemini(env, history, content, modelFiles, thinking, instructions), citations: [] };
       const publicFiles = stored.map(({ id, name, type, size }) => ({ id, name, type, size }));
-      if (temporary) return json({ chatId: "temporary", answer, remaining: Math.max(0, settings.daily_limit - count) });
-      const messages = [...fullHistory, { role: "user", content, files: publicFiles }, { role: "assistant", content: answer }];
+      if (temporary) return json({ chatId: "temporary", answer, citations, remaining: Math.max(0, settings.daily_limit - count) });
+      const messages = [...fullHistory, { role: "user", content, files: publicFiles }, { role: "assistant", content: answer, citations }];
       const title = existing?.title || content.slice(0, 46) || files[0].name.slice(0, 46);
       await env.DB.prepare("INSERT INTO chats (id, user_id, title, model, messages_json, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET messages_json = excluded.messages_json, updated_at = excluded.updated_at").bind(chatId, user.id, title, model, JSON.stringify(messages), Date.now()).run();
-      return json({ chatId, answer, files: publicFiles, remaining: Math.max(0, settings.daily_limit - count) });
+      return json({ chatId, answer, citations, files: publicFiles, remaining: Math.max(0, settings.daily_limit - count) });
     } catch (error) {
       if (stored.length) {
         await Promise.allSettled(stored.map((file) => fileStore(env).delete(file.key)));
