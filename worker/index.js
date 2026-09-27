@@ -348,7 +348,7 @@ export default {
     const allowedOrigins = String(env.ALLOWED_ORIGIN || "").split(",").map((value) => value.trim()).filter(Boolean);
     if (!allowedOrigins.length) return safeError("ALLOWED_ORIGIN не настроен.", 503);
     if (origin && !allowedOrigins.includes(origin) && origin !== "http://localhost:4173") return safeError("Этот сайт не имеет доступа к API.", 403);
-    const cors = { "Access-Control-Allow-Origin": origin || allowedOrigins[0], "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS", "Access-Control-Allow-Headers": "Authorization, Content-Type, X-Admin-Password", "Vary": "Origin" };
+    const cors = { "Access-Control-Allow-Origin": origin || allowedOrigins[0], "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS", "Access-Control-Allow-Headers": "Authorization, Content-Type, X-Admin-Password", "Vary": "Origin" };
     if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: cors });
     let response;
     try { response = await handleApi(request, env); }

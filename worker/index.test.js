@@ -47,6 +47,17 @@ const TOKEN_A = "a".repeat(43);
 const TOKEN_B = "b".repeat(43);
 const env = (db) => ({ DB: db, ALLOWED_ORIGIN: "https://site.example.test", OPENAI_API_KEY: "test-openai", GEMINI_API_KEY: "test-gemini" });
 
+test("browser preflight allows saving profile settings", async () => {
+  const response = await worker.fetch(new Request("https://api.example.test/api/profile", {
+    method: "OPTIONS",
+    headers: { Origin: "https://site.example.test", "Access-Control-Request-Method": "PUT", "Access-Control-Request-Headers": "authorization,content-type" },
+  }), { ALLOWED_ORIGIN: "https://site.example.test" });
+  assert.equal(response.status, 204);
+  assert.equal(response.headers.get("Access-Control-Allow-Origin"), "https://site.example.test");
+  assert.match(response.headers.get("Access-Control-Allow-Methods"), /\bPUT\b/);
+  assert.match(response.headers.get("Access-Control-Allow-Headers"), /Authorization/);
+});
+
 test("personal links isolate chats and share daily quota", async (context) => {
   const db = database();
   setupUser(db, "user-a", TOKEN_A);
