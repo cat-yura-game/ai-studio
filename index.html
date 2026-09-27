@@ -128,6 +128,17 @@
       </div>
     </dialog>
 
+    <dialog id="nameDialog" class="settings-dialog" aria-labelledby="nameDialogTitle">
+      <div class="dialog-head"><h2 id="nameDialogTitle">Как к вам обращаться?</h2></div>
+      <form id="nameForm" class="dialog-body">
+        <p class="field-note">Сохраните имя в личном профиле. Оно будет доступно на всех устройствах по вашей ссылке.</p>
+        <label class="field-label" for="firstNameInput">Ваше имя</label>
+        <input class="text-field" id="firstNameInput" type="text" maxlength="80" autocomplete="given-name" required autofocus placeholder="Введите имя" />
+        <button class="primary-button" type="submit">Сохранить имя</button>
+        <button class="name-later-button" id="nameLaterButton" type="button">Позже</button>
+      </form>
+    </dialog>
+
     <dialog id="limitsDialog" class="settings-dialog">
       <form method="dialog" class="dialog-head"><h2>Лимиты</h2><button class="icon-button" aria-label="Закрыть"><svg><use href="#i-close"/></svg></button></form>
       <div class="dialog-body">

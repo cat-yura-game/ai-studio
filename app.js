@@ -67,7 +67,19 @@ async function api(path, options = {}) {
   if (!response.ok) throw new Error(data.error || `Ошибка сервера (${response.status}).`);
   return data;
 }
-async function connect() {
+function promptForName() {
+  const dialog = $("nameDialog");
+  if (!state.connected || state.profile.displayName?.trim()) {
+    if (dialog.open) dialog.close();
+    return;
+  }
+  if (!dialog.open) {
+    $("firstNameInput").value = "";
+    dialog.showModal();
+    $("firstNameInput").focus();
+  }
+}
+async function connect(askForName = true) {
   if (!state.apiUrl || !state.token) { state.connected = false; state.chats = []; renderAll(); return; }
   try {
     const [profile, chats, personalization] = await Promise.all([api("/api/me"), api("/api/chats"), api("/api/profile")]);
@@ -87,6 +99,7 @@ async function connect() {
     state.currentId = state.chats[0]?.id || null;
     state.model = state.chats[0]?.model || state.defaultModel;
     renderAll();
+    if (askForName) promptForName();
   } catch (error) {
     state.connected = false;
     state.chats = [];
@@ -392,12 +405,26 @@ $("saveSettings").addEventListener("click", async () => {
   if (state.token) localStorage.setItem("chat_access_token", state.token);
   $("settingsDialog").close();
   if (!state.apiUrl) { showToast("Адрес Worker ещё не настроен владельцем сайта."); renderAll(); return; }
-  await connect();
+  await connect(false);
   if (state.connected) {
-    try { state.profile = await api("/api/profile", { method: "PUT", body: JSON.stringify(personalization) }); state.defaultModel = state.profile.defaultModel; localStorage.setItem("chat_default_model", state.defaultModel); if (!currentChat()) state.model = state.defaultModel; renderAll(); showToast("Настройки сохранены"); }
+    try { state.profile = await api("/api/profile", { method: "PUT", body: JSON.stringify(personalization) }); state.defaultModel = state.profile.defaultModel; localStorage.setItem("chat_default_model", state.defaultModel); if (!currentChat()) state.model = state.defaultModel; renderAll(); promptForName(); showToast("Настройки сохранены"); }
     catch (error) { showToast(error.message); }
   }
 });
+$("nameForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const displayName = $("firstNameInput").value.trim();
+  if (!displayName) { $("firstNameInput").value = ""; $("firstNameInput").reportValidity(); return; }
+  const button = $("nameForm").querySelector('button[type="submit"]');
+  button.disabled = true;
+  try {
+    state.profile = await api("/api/profile", { method: "PUT", body: JSON.stringify({ ...state.profile, displayName, defaultModel: state.defaultModel }) });
+    $("nameDialog").close();
+    showToast("Имя сохранено");
+  } catch (error) { showToast(error.message); }
+  finally { button.disabled = false; }
+});
+$("nameLaterButton").addEventListener("click", () => $("nameDialog").close());
 $("quotaCard").addEventListener("click", () => { $("limitsDialog").showModal(); closeMobile(); });
 $("useResetButton").addEventListener("click", async () => {
   try {
