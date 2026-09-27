@@ -46,10 +46,10 @@
           <div id="chatList" class="chat-list"></div>
         </div>
         <div class="sidebar-bottom">
-          <button class="quota-card" id="quotaCard" type="button"><div class="quota-head"><span>Дневной лимит</span><strong id="quotaPercent">100%</strong></div><div class="quota-track"><div class="quota-fill" id="quotaFill"></div></div><small id="quotaText">30 из 30 запросов осталось</small></button>
+          <button class="quota-card" id="quotaCard" type="button"><div class="quota-head"><span>Дневной лимит</span><strong id="quotaPercent">—</strong></div><div class="quota-track"><div class="quota-fill" id="quotaFill"></div></div><small id="quotaText">Откройте личную ссылку</small></button>
           <button class="profile-button" id="settingsButton">
             <span class="avatar">ИИ</span>
-            <span class="profile-copy"><strong>Личный профиль</strong><small id="planLabel">Деморежим</small></span>
+            <span class="profile-copy"><strong>Личный профиль</strong><small id="planLabel">Требуется вход</small></span>
             <svg><use href="#i-more"/></svg>
           </button>
         </div>
@@ -106,7 +106,7 @@
     <dialog id="settingsDialog" class="settings-dialog">
       <form method="dialog" class="dialog-head"><h2>Настройки</h2><button class="icon-button" aria-label="Закрыть"><svg><use href="#i-close"/></svg></button></form>
       <div class="dialog-body">
-        <div class="setting-block"><div><strong>Режим подключения</strong><p id="connectionDescription">Деморежим. Реальные модели пока не подключены.</p></div><span class="status-dot" id="connectionDot"></span></div>
+        <div class="setting-block"><div><strong>Подключение</strong><p id="connectionDescription">Откройте личную ссылку доступа.</p></div><span class="status-dot" id="connectionDot"></span></div>
         <label class="field-label" for="defaultModelSelect">Модель по умолчанию для новых чатов</label>
         <select class="text-field" id="defaultModelSelect"><option value="gpt-6-luna">GPT-6 Luna</option><option value="gemini-3.8-flash">Gemini 3.8 Flash</option></select>
         <div class="dialog-divider"></div>
@@ -131,8 +131,8 @@
     <dialog id="limitsDialog" class="settings-dialog">
       <form method="dialog" class="dialog-head"><h2>Лимиты</h2><button class="icon-button" aria-label="Закрыть"><svg><use href="#i-close"/></svg></button></form>
       <div class="dialog-body">
-        <div class="limits-number" id="limitsNumber">30 / 30</div>
-        <p class="limits-caption">запросов осталось сегодня</p>
+        <div class="limits-number" id="limitsNumber">—</div>
+        <p class="limits-caption">лимита осталось сегодня</p>
         <div class="quota-track limits-track"><div class="quota-fill" id="limitsFill"></div></div>
         <p class="field-note" id="limitsResetTime">Лимит обновляется каждый день в 00:00 UTC.</p>
         <div class="dialog-divider"></div>

@@ -14,6 +14,15 @@
       <header class="admin-header"><a href="./">← Чат</a><span>Бета · управление</span></header>
       <h1>Админка</h1>
       <p class="admin-intro" id="status">Подключаюсь к Worker…</p>
+      <section class="admin-card hidden" id="loginCard">
+        <h2>Вход администратора</h2>
+        <p>Введите пароль, чтобы управлять лимитами и личными ссылками.</p>
+        <form id="loginForm" class="admin-login-form">
+          <label for="adminPassword">Пароль администратора</label>
+          <input id="adminPassword" type="password" autocomplete="current-password" required />
+          <button class="primary-button" type="submit">Войти</button>
+        </form>
+      </section>
       <section class="admin-card hidden" id="settingsCard">
         <h2>Лимиты и сбросы</h2>
         <p>Правила применяются ко всем пользователям.</p>

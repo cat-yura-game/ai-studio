@@ -3,9 +3,10 @@ const $ = (id) => document.getElementById(id);
 const match = location.hash.match(/(?:^#|&)invite=([^&]+)/);
 if (match) { localStorage.setItem("admin_access_token", decodeURIComponent(match[1])); history.replaceState(null, "", location.pathname + location.search); }
 const token = localStorage.getItem("admin_access_token") || "";
+let password = sessionStorage.getItem("admin_password") || "";
 
 async function api(path, options = {}) {
-  const response = await fetch(`${apiBase}${path}`, { ...options, headers: { Authorization: `Bearer ${token}`, ...(options.body ? { "Content-Type": "application/json" } : {}) } });
+  const response = await fetch(`${apiBase}${path}`, { ...options, headers: { Authorization: `Bearer ${token}`, "X-Admin-Password": password, ...(options.body ? { "Content-Type": "application/json" } : {}) } });
   const data = await response.json();
   if (!response.ok) throw new Error(data.error || "Ошибка сервера.");
   return data;
@@ -30,6 +31,7 @@ function renderUsers(users, cap) {
 async function load() {
   if (!apiBase) { status("Адрес Worker ещё не настроен в config.js."); return; }
   if (!token) { status("Откройте админку по личной ссылке администратора."); return; }
+  if (!password) { $("loginCard").classList.remove("hidden"); status("Введите пароль администратора."); return; }
   try {
     const [policy, people] = await Promise.all([api("/api/admin/settings"), api("/api/admin/users")]);
     const settings = policy.settings;
@@ -38,11 +40,25 @@ async function load() {
     $("resetCap").value = settings.reset_cap;
     $("resetGrantAmount").value = settings.reset_grant_amount;
     renderUsers(people.users, settings.reset_cap);
+    $("loginCard").classList.add("hidden");
     $("settingsCard").classList.remove("hidden");
     $("usersCard").classList.remove("hidden");
     status("Изменения сохраняются сразу для всех пользователей.");
-  } catch (error) { status(error.message); }
+  } catch (error) {
+    $("settingsCard").classList.add("hidden");
+    $("usersCard").classList.add("hidden");
+    $("loginCard").classList.remove("hidden");
+    if (error.message === "Неверный пароль администратора.") { password = ""; sessionStorage.removeItem("admin_password"); }
+    status(error.message);
+  }
 }
+$("loginForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  password = $("adminPassword").value;
+  $("adminPassword").value = "";
+  sessionStorage.setItem("admin_password", password);
+  await load();
+});
 $("policyForm").addEventListener("submit", async (event) => {
   event.preventDefault();
   try {

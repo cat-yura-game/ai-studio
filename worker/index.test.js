@@ -35,10 +35,10 @@ function setupUser(db, id, token) {
   db.sqlite.prepare("INSERT INTO users (id, token_hash, reset_last_grant_at, created_at) VALUES (?, ?, ?, ?)").run(id, createHash("sha256").update(token).digest("hex"), now, now);
 }
 
-function makeRequest(path, token, method = "GET", body = null) {
+function makeRequest(path, token, method = "GET", body = null, extraHeaders = {}) {
   return new Request(`https://api.example.test${path}`, {
     method,
-    headers: { Origin: "https://site.example.test", Authorization: `Bearer ${token}`, ...(body ? { "Content-Type": "application/json" } : {}) },
+    headers: { Origin: "https://site.example.test", Authorization: `Bearer ${token}`, ...(body ? { "Content-Type": "application/json" } : {}), ...extraHeaders },
     body: body ? JSON.stringify(body) : undefined,
   });
 }
@@ -140,12 +140,17 @@ test("admin can change reset policy and create personal links", async (context) 
   db.sqlite.prepare("UPDATE users SET role='admin' WHERE id='admin'").run();
   setupUser(db, "user-b", TOKEN_B);
   context.after(() => db.sqlite.close());
-  const denied = await worker.fetch(makeRequest("/api/admin/settings", TOKEN_B), env(db));
+  const password = "test-admin-password";
+  const adminEnv = { ...env(db), ADMIN_PASSWORD_HASH: createHash("sha256").update(password).digest("hex") };
+  const adminHeaders = { "X-Admin-Password": password };
+  const denied = await worker.fetch(makeRequest("/api/admin/settings", TOKEN_B, "GET", null, adminHeaders), adminEnv);
   assert.equal(denied.status, 403);
-  const changed = await worker.fetch(makeRequest("/api/admin/settings", TOKEN_A, "PUT", { dailyLimit: 35, resetIntervalDays: 2, resetCap: 5, resetGrantAmount: 2 }), env(db));
+  assert.equal((await worker.fetch(makeRequest("/api/admin/settings", TOKEN_A), adminEnv)).status, 401);
+  assert.equal((await worker.fetch(makeRequest("/api/admin/settings", TOKEN_A, "GET", null, { "X-Admin-Password": "wrong" }), adminEnv)).status, 401);
+  const changed = await worker.fetch(makeRequest("/api/admin/settings", TOKEN_A, "PUT", { dailyLimit: 35, resetIntervalDays: 2, resetCap: 5, resetGrantAmount: 2 }, adminHeaders), adminEnv);
   assert.equal(changed.status, 200);
   assert.equal((await (await worker.fetch(makeRequest("/api/me", TOKEN_B), env(db))).json()).limit, 35);
-  const invite = await worker.fetch(makeRequest("/api/admin/invite", TOKEN_A, "POST", {}), env(db));
+  const invite = await worker.fetch(makeRequest("/api/admin/invite", TOKEN_A, "POST", {}, adminHeaders), adminEnv);
   assert.equal(invite.status, 200);
   const created = await invite.json();
   assert.equal((await worker.fetch(makeRequest("/api/me", created.token), env(db))).status, 200);

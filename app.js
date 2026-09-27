@@ -40,14 +40,6 @@ function showToast(message) {
   clearTimeout(showToast.timer);
   showToast.timer = setTimeout(() => toast.classList.remove("show"), 3300);
 }
-function localSave() {
-  if (!state.connected) localStorage.setItem("chat_demo_chats", JSON.stringify(state.chats));
-}
-function readLocal() {
-  try { state.chats = JSON.parse(localStorage.getItem("chat_demo_chats") || "[]"); }
-  catch { state.chats = []; }
-  if (!Array.isArray(state.chats)) state.chats = [];
-}
 function tokenFromUrl() {
   const match = location.hash.match(/(?:^#|&)invite=([^&]+)/);
   if (!match) return;
@@ -76,7 +68,7 @@ async function api(path, options = {}) {
   return data;
 }
 async function connect() {
-  if (!state.apiUrl || !state.token) { state.connected = false; readLocal(); renderAll(); return; }
+  if (!state.apiUrl || !state.token) { state.connected = false; state.chats = []; renderAll(); return; }
   try {
     const [profile, chats, personalization] = await Promise.all([api("/api/me"), api("/api/chats"), api("/api/profile")]);
     state.connected = true;
@@ -97,23 +89,23 @@ async function connect() {
     renderAll();
   } catch (error) {
     state.connected = false;
-    readLocal();
+    state.chats = [];
     renderAll();
     showToast(error.message);
   }
 }
 function renderQuota() {
-  const percent = Math.round((state.remaining / Math.max(1, state.limit)) * 100);
+  const percent = Math.max(0, Math.min(100, Math.round((state.remaining / Math.max(1, state.limit)) * 100)));
   $("quotaPercent").textContent = state.connected ? `${percent}%` : "—";
   $("quotaFill").style.width = state.connected ? `${percent}%` : "0%";
-  $("quotaText").textContent = state.connected ? `${state.remaining} из ${state.limit} запросов осталось` : "Подключите личную ссылку";
-  $("modePill").textContent = state.connected ? "Бета" : "Демо";
+  $("quotaText").textContent = state.connected ? `${percent}% лимита осталось` : "Откройте личную ссылку";
+  $("modePill").textContent = state.connected ? "Бета" : "Доступ по ссылке";
   if (state.currentId === "temporary") $("modePill").textContent = "Временный чат";
-  $("planLabel").textContent = state.connected ? "Бета · личный доступ" : "Деморежим";
-  $("connectionDescription").textContent = state.connected ? "Сервер подключён. История и лимит привязаны к личной ссылке." : "Реальные модели пока не подключены.";
+  $("planLabel").textContent = state.connected ? "Бета · личный доступ" : "Требуется вход";
+  $("connectionDescription").textContent = state.connected ? "Сервер подключён. История и лимит привязаны к личной ссылке." : state.apiUrl ? "Откройте личную ссылку доступа. Если она уже сохранена, проверьте подключение." : "Сервис временно не настроен.";
   $("connectionDot").classList.toggle("connected", state.connected);
   $("welcomeText").textContent = state.connected ? "Выберите модель и напишите сообщение. История синхронизируется по вашей личной ссылке." : "Выберите модель и напишите сообщение. Для реальных ответов потребуется личная ссылка доступа.";
-  $("limitsNumber").textContent = state.connected ? `${state.remaining} / ${state.limit}` : "— / —";
+  $("limitsNumber").textContent = state.connected ? `${percent}%` : "—";
   $("limitsFill").style.width = state.connected ? `${percent}%` : "0%";
   $("resetBalance").textContent = state.connected ? `${state.resetBalance} из ${state.resetCap}` : "—";
   $("nextResetText").textContent = state.connected ? (state.nextResetAt ? `Начисление: +${state.resetGrantAmount} каждые ${state.resetIntervalDays} дн. Следующее — ${new Date(state.nextResetAt).toLocaleString("ru-RU")}.` : "Запас сбросов заполнен.") : "Подключите личную ссылку, чтобы увидеть сбросы.";
@@ -296,7 +288,6 @@ async function deleteChat(chatId) {
   }
   state.chats = state.chats.filter((chat) => chat.id !== chatId);
   if (state.currentId === chatId) state.currentId = state.chats[0]?.id || null;
-  localSave();
   renderAll();
 }
 function readFile(file) {
@@ -309,6 +300,7 @@ function readFile(file) {
 }
 async function sendMessage() {
   if (state.busy) return;
+  if (!state.connected) { showToast("Для чата нужна личная ссылка доступа."); openSettings(); return; }
   const content = $("promptInput").value.trim();
   const attached = [...state.files];
   if (!content && attached.length === 0) return;
@@ -323,11 +315,10 @@ async function sendMessage() {
   $("promptInput").value = "";
   state.files = [];
   state.busy = true;
-  localSave();
   renderAll();
   try {
     let answer;
-    if (state.connected) {
+    {
       const previousUploads = temporary && !attached.length ? [...chat.messages].reverse().find((message) => message._uploads)?._uploads || [] : [];
       const modelAttachments = attached.length ? attached : previousUploads;
       const files = await Promise.all(modelAttachments.map(async (file) => ({ name: file.name, type: file.type || "application/octet-stream", size: file.size, data: await readFile(file) })));
@@ -337,12 +328,9 @@ async function sendMessage() {
       chat.id = result.chatId;
       state.currentId = result.chatId;
       userMessage.files = result.files || userMessage.files;
-    } else {
-      answer = "Это деморежим интерфейса. Для ответа модели добавьте адрес Cloudflare Worker и откройте личную ссылку доступа в настройках.";
     }
     chat.messages.push({ role: "assistant", content: answer });
     chat.updatedAt = Date.now();
-    localSave();
   } catch (error) {
     chat.messages.pop();
     $("promptInput").value = content;
@@ -379,7 +367,6 @@ function renderSearch() {
 }
 
 tokenFromUrl();
-readLocal();
 renderAll();
 connect();
 $("newChatButton").addEventListener("click", newChat);
@@ -430,7 +417,6 @@ $("clearChats").addEventListener("click", async () => {
   }
   state.chats = [];
   state.currentId = null;
-  localSave();
   $("settingsDialog").close();
   renderAll();
 });

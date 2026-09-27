@@ -92,6 +92,15 @@ async function hashToken(token) {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token));
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
+async function adminPasswordValid(request, env) {
+  const expected = String(env.ADMIN_PASSWORD_HASH || "").trim().toLowerCase();
+  const password = request.headers.get("X-Admin-Password") || "";
+  if (!/^[a-f0-9]{64}$/.test(expected) || !password || password.length > 256) return false;
+  const actual = await hashToken(password);
+  let difference = 0;
+  for (let i = 0; i < expected.length; i++) difference |= expected.charCodeAt(i) ^ actual.charCodeAt(i);
+  return difference === 0;
+}
 async function userForRequest(request, env) {
   const match = /^Bearer ([A-Za-z0-9_-]{32,})$/.exec(request.headers.get("Authorization") || "");
   if (!match) return null;
@@ -227,6 +236,8 @@ async function handleApi(request, env) {
   }
   if (path.startsWith("/api/admin")) {
     if (user.role !== "admin") return safeError("Недостаточно прав.", 403);
+    if (!env.ADMIN_PASSWORD_HASH) return safeError("Пароль админки ещё не настроен.", 503);
+    if (!await adminPasswordValid(request, env)) return safeError("Неверный пароль администратора.", 401);
     if (request.method === "POST" && path === "/api/admin/invite") {
       const bytes = crypto.getRandomValues(new Uint8Array(32));
       const token = btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
@@ -334,7 +345,7 @@ export default {
     const allowedOrigins = String(env.ALLOWED_ORIGIN || "").split(",").map((value) => value.trim()).filter(Boolean);
     if (!allowedOrigins.length) return safeError("ALLOWED_ORIGIN не настроен.", 503);
     if (origin && !allowedOrigins.includes(origin) && origin !== "http://localhost:4173") return safeError("Этот сайт не имеет доступа к API.", 403);
-    const cors = { "Access-Control-Allow-Origin": origin || allowedOrigins[0], "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS", "Access-Control-Allow-Headers": "Authorization, Content-Type", "Vary": "Origin" };
+    const cors = { "Access-Control-Allow-Origin": origin || allowedOrigins[0], "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS", "Access-Control-Allow-Headers": "Authorization, Content-Type, X-Admin-Password", "Vary": "Origin" };
     if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: cors });
     let response;
     try { response = await handleApi(request, env); }
