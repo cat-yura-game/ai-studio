@@ -205,11 +205,11 @@ test("AgentRouter GPT and Claude use their respective API formats", async (conte
     assert.equal(response.status, 200);
     assert.ok((await response.json()).answer.startsWith("Ответ"));
   }
-  assert.equal(calls[0].url, "https://co.agentrouter.org/v1/chat/completions");
+  assert.equal(calls[0].url, "https://agentrouter.org/v1/chat/completions");
   assert.equal(calls[0].body.model, "gpt-6-astra");
   assert.equal(calls[0].body.reasoning_effort, "high");
   assert.equal(calls[0].headers.Authorization, "Bearer test-router");
-  assert.equal(calls[1].url, "https://co.agentrouter.org/v1/messages");
+  assert.equal(calls[1].url, "https://agentrouter.org/v1/messages");
   assert.equal(calls[1].body.model, "claude-opus-5");
   assert.equal(calls[1].body.thinking.budget_tokens, 1024);
   assert.equal(calls[1].headers["x-api-key"], "test-router");

@@ -191,13 +191,16 @@ function routerContent(message, files, anthropic = false) {
 async function callRouterGpt(env, history, message, files, thinking, instructions) {
   if (!env.AGENTROUTER_API_KEY) throw new Error("Ключ AgentRouter ещё не добавлен в Worker.");
   const messages = [{ role: "system", content: instructions }, ...history.slice(-24).map(({ role, content }) => ({ role, content })), { role: "user", content: routerContent(message, files) }];
-  const response = await fetch("https://co.agentrouter.org/v1/chat/completions", {
+  const response = await fetch("https://agentrouter.org/v1/chat/completions", {
     method: "POST",
     headers: { Authorization: `Bearer ${env.AGENTROUTER_API_KEY}`, "Content-Type": "application/json" },
     body: JSON.stringify({ model: "gpt-6-astra", messages, reasoning_effort: thinking, max_completion_tokens: 8192 }),
   });
-  const data = await response.json();
-  if (!response.ok) throw new Error(data.error?.message || "AgentRouter временно недоступен.");
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const detail = data.error?.message || data.message || data.msg;
+    throw new Error(`AgentRouter отклонил запрос (HTTP ${response.status})${typeof detail === "string" ? `: ${detail.slice(0, 180)}` : ""}.`);
+  }
   const answer = data.choices?.[0]?.message?.content;
   if (typeof answer !== "string" || !answer.trim()) throw new Error("Модель не вернула текстовый ответ. Попробуйте ещё раз.");
   return answer.trim();
@@ -206,13 +209,16 @@ async function callRouterClaude(env, history, message, files, thinking, instruct
   if (!env.AGENTROUTER_API_KEY) throw new Error("Ключ AgentRouter ещё не добавлен в Worker.");
   const messages = [...history.slice(-24).map(({ role, content }) => ({ role, content })), { role: "user", content: routerContent(message, files, true) }];
   const budget = { low: 1024, medium: 4096, high: 8192 }[thinking];
-  const response = await fetch("https://co.agentrouter.org/v1/messages", {
+  const response = await fetch("https://agentrouter.org/v1/messages", {
     method: "POST",
     headers: { "x-api-key": env.AGENTROUTER_API_KEY, "anthropic-version": "2023-06-01", "Content-Type": "application/json" },
     body: JSON.stringify({ model: "claude-opus-5", system: instructions, messages, max_tokens: 16384, thinking: { type: "enabled", budget_tokens: budget } }),
   });
-  const data = await response.json();
-  if (!response.ok) throw new Error(data.error?.message || "AgentRouter временно недоступен.");
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const detail = data.error?.message || data.message || data.msg;
+    throw new Error(`AgentRouter отклонил запрос (HTTP ${response.status})${typeof detail === "string" ? `: ${detail.slice(0, 180)}` : ""}.`);
+  }
   const answer = (data.content || []).filter((part) => part.type === "text").map((part) => part.text).join("\n").trim();
   if (!answer) throw new Error("Модель не вернула текстовый ответ. Попробуйте ещё раз.");
   return answer;
