@@ -62,9 +62,10 @@ test("voice transcription is capped separately and a spoken chat uses one daily 
   db.sqlite.exec("UPDATE settings SET daily_limit = 1");
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (url, options) => {
-    if (String(url).endsWith("/audio/transcriptions")) {
-      assert.equal(options.body.get("model"), "gpt-transcribe");
-      return Response.json({ text: "Привет, помощник" });
+    if (String(url).includes("gemini-3.8-flash:generateContent")) {
+      const body = JSON.parse(options.body);
+      assert.equal(body.contents[0].parts[1].inline_data.mime_type, "audio/webm");
+      return Response.json({ candidates: [{ content: { parts: [{ text: "Привет, помощник" }] } }] });
     }
     return Response.json({ output: [{ content: [{ type: "output_text", text: "Текстовый ответ" }] }] });
   };

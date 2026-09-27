@@ -150,14 +150,18 @@ async function releaseRequest(db, userId, day) {
   await db.prepare("UPDATE usage SET count = MAX(0, count - 1) WHERE user_id = ? AND day = ?").bind(userId, day).run();
 }
 async function transcribeAudio(env, audio) {
-  if (!env.OPENAI_API_KEY) throw new Error("Ключ OpenAI ещё не добавлен в Worker.");
-  const body = new FormData();
-  body.set("model", "gpt-transcribe");
-  body.set("file", audio, audio.type.includes("mp4") ? "speech.mp4" : "speech.webm");
-  const response = await fetch("https://api.openai.com/v1/audio/transcriptions", { method: "POST", headers: { Authorization: `Bearer ${env.OPENAI_API_KEY}` }, body });
+  if (!env.GEMINI_API_KEY) throw new Error("Ключ Gemini ещё не добавлен в Worker.");
+  const bytes = new Uint8Array(await audio.arrayBuffer());
+  const response = await fetch("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent", {
+    method: "POST",
+    headers: { "x-goog-api-key": env.GEMINI_API_KEY, "Content-Type": "application/json" },
+    body: JSON.stringify({ contents: [{ parts: [{ text: "Дословно расшифруй речь из аудио. Верни только произнесённый текст, без пояснений и Markdown." }, { inline_data: { mime_type: audio.type.split(";")[0], data: base64FromBytes(bytes) } }] }], generationConfig: { maxOutputTokens: 2048 } }),
+  });
   const data = await response.json();
-  if (!response.ok) throw new Error(data.error?.message || "Не удалось распознать речь.");
-  return String(data.text || "").trim().slice(0, 12_000);
+  if (!response.ok) throw new Error(data.error?.message || "Gemini не смог распознать речь.");
+  const text = (data.candidates?.[0]?.content?.parts || []).map((part) => part.text || "").join(" ").trim().slice(0, 12_000);
+  if (!text) throw new Error("Речь не распознана.");
+  return text;
 }
 function openAiInput(history, message, files) {
   const prior = history.slice(-24).map((entry) => ({ role: entry.role, content: entry.content || "(вложение)" }));
