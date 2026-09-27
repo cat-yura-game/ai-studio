@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
-import worker from "./index.js";
+import worker, { dayKey, nextDailyResetAt } from "./index.js";
 
 function database() {
   const sqlite = new DatabaseSync(":memory:");
@@ -46,6 +46,45 @@ function makeRequest(path, token, method = "GET", body = null, extraHeaders = {}
 const TOKEN_A = "a".repeat(43);
 const TOKEN_B = "b".repeat(43);
 const env = (db) => ({ DB: db, ALLOWED_ORIGIN: "https://site.example.test", OPENAI_API_KEY: "test-openai", GEMINI_API_KEY: "test-gemini" });
+
+test("daily quota rolls over at midnight in Moscow", () => {
+  const before = Date.parse("2026-09-26T20:59:59Z");
+  const after = Date.parse("2026-09-26T21:00:00Z");
+  assert.equal(dayKey(before), "2026-09-26");
+  assert.equal(dayKey(after), "2026-09-27");
+  assert.ok(nextDailyResetAt(before) >= after);
+  assert.ok(nextDailyResetAt(before) < after + 1000);
+});
+
+test("voice transcription is capped separately and a spoken chat uses one daily request", async (context) => {
+  const db = database();
+  setupUser(db, "voice-user", TOKEN_A);
+  db.sqlite.exec("UPDATE settings SET daily_limit = 1");
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, options) => {
+    if (String(url).endsWith("/audio/transcriptions")) {
+      assert.equal(options.body.get("model"), "gpt-transcribe");
+      return Response.json({ text: "Привет, помощник" });
+    }
+    return Response.json({ output: [{ content: [{ type: "output_text", text: "Текстовый ответ" }] }] });
+  };
+  context.after(() => { globalThis.fetch = originalFetch; db.sqlite.close(); });
+  function voiceRequest() {
+    const form = new FormData();
+    form.set("audio", new File([new Uint8Array(200)], "speech.webm", { type: "audio/webm" }));
+    return new Request("https://api.example.test/api/transcribe", { method: "POST", headers: { Origin: "https://site.example.test", Authorization: `Bearer ${TOKEN_A}` }, body: form });
+  }
+  const transcription = await worker.fetch(voiceRequest(), env(db));
+  assert.equal(transcription.status, 200);
+  assert.equal((await transcription.json()).text, "Привет, помощник");
+  assert.equal((await (await worker.fetch(makeRequest("/api/me", TOKEN_A), env(db))).json()).remaining, 1);
+  const blockedVoice = await worker.fetch(voiceRequest(), env(db));
+  assert.equal(blockedVoice.status, 429);
+  const chat = await worker.fetch(makeRequest("/api/chat", TOKEN_A, "POST", { model: "gpt-6-luna", thinking: "medium", content: "Привет, помощник", files: [] }), env(db));
+  assert.equal(chat.status, 200);
+  assert.equal((await chat.json()).answer, "Текстовый ответ");
+  assert.equal((await (await worker.fetch(makeRequest("/api/me", TOKEN_A), env(db))).json()).remaining, 0);
+});
 
 test("browser preflight allows saving profile settings", async () => {
   const response = await worker.fetch(new Request("https://api.example.test/api/profile", {

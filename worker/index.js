@@ -1,5 +1,7 @@
 const DAY_MS = 86_400_000;
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
+const MAX_VOICE_BYTES = 3 * 1024 * 1024;
+const MOSCOW_DATE = new Intl.DateTimeFormat("en-US", { timeZone: "Europe/Moscow", year: "numeric", month: "2-digit", day: "2-digit" });
 const ALLOWED_MODELS = new Set(["gpt-6-luna", "gemini-3.8-flash"]);
 const THINKING = { "gpt-6-luna": new Set(["none", "low", "medium", "high", "xhigh", "max"]), "gemini-3.8-flash": new Set(["low", "medium", "high"]) };
 const MODEL_NAMES = { "gpt-6-luna": "GPT-6 Luna", "gemini-3.8-flash": "Gemini 3.8 Flash", "gpt-6-astra": "GPT-6 Astra", "claude-opus-5": "Claude Opus 5" };
@@ -9,7 +11,21 @@ const GEMINI_MEDIA_TYPES = new Set(["application/pdf", "image/png", "image/jpeg"
 function json(data, status = 200, headers = {}) {
   return new Response(JSON.stringify(data), { status, headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store", ...headers } });
 }
-function dayKey() { return new Date().toISOString().slice(0, 10); }
+function dayKey(at = Date.now()) {
+  const parts = Object.fromEntries(MOSCOW_DATE.formatToParts(new Date(at)).map(({ type, value }) => [type, value]));
+  return `${parts.year}-${parts.month}-${parts.day}`;
+}
+function nextDailyResetAt(at = Date.now()) {
+  const today = dayKey(at);
+  let before = at;
+  let after = at + DAY_MS + 4 * 60 * 60 * 1000;
+  while (after - before > 1000) {
+    const middle = Math.floor((before + after) / 2);
+    if (dayKey(middle) === today) before = middle;
+    else after = middle;
+  }
+  return after;
+}
 function safeError(message, status = 400) { return json({ error: message }, status); }
 function isTextFile(file) {
   const ext = String(file.name).split(".").pop().toLowerCase();
@@ -126,12 +142,22 @@ async function usageForUser(db, userId) {
   const record = await db.prepare("SELECT count FROM usage WHERE user_id = ? AND day = ?").bind(userId, dayKey()).first();
   return Number(record?.count || 0);
 }
-async function reserveRequest(db, userId, limit) {
-  const record = await db.prepare("INSERT INTO usage (user_id, day, count) VALUES (?, ?, 1) ON CONFLICT(user_id, day) DO UPDATE SET count = count + 1 WHERE count < ? RETURNING count").bind(userId, dayKey(), limit).first();
+async function reserveRequest(db, userId, limit, day = dayKey()) {
+  const record = await db.prepare("INSERT INTO usage (user_id, day, count) VALUES (?, ?, 1) ON CONFLICT(user_id, day) DO UPDATE SET count = count + 1 WHERE count < ? RETURNING count").bind(userId, day, limit).first();
   return record ? Number(record.count) : null;
 }
-async function releaseRequest(db, userId) {
-  await db.prepare("UPDATE usage SET count = MAX(0, count - 1) WHERE user_id = ? AND day = ?").bind(userId, dayKey()).run();
+async function releaseRequest(db, userId, day) {
+  await db.prepare("UPDATE usage SET count = MAX(0, count - 1) WHERE user_id = ? AND day = ?").bind(userId, day).run();
+}
+async function transcribeAudio(env, audio) {
+  if (!env.OPENAI_API_KEY) throw new Error("Ключ OpenAI ещё не добавлен в Worker.");
+  const body = new FormData();
+  body.set("model", "gpt-transcribe");
+  body.set("file", audio, audio.type.includes("mp4") ? "speech.mp4" : "speech.webm");
+  const response = await fetch("https://api.openai.com/v1/audio/transcriptions", { method: "POST", headers: { Authorization: `Bearer ${env.OPENAI_API_KEY}` }, body });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error?.message || "Не удалось распознать речь.");
+  return String(data.text || "").trim().slice(0, 12_000);
 }
 function openAiInput(history, message, files) {
   const prior = history.slice(-24).map((entry) => ({ role: entry.role, content: entry.content || "(вложение)" }));
@@ -227,7 +253,7 @@ async function handleApi(request, env) {
   if (request.method === "GET" && path === "/api/me") {
     const updated = await refreshResets(env.DB, user, settings);
     const used = await usageForUser(env.DB, user.id);
-    return json({ limit: settings.daily_limit, used, remaining: Math.max(0, settings.daily_limit - used), resetBalance: updated.reset_balance, resetCap: settings.reset_cap, resetIntervalDays: settings.reset_interval_days, resetGrantAmount: settings.reset_grant_amount, nextResetAt: nextGrantAt(updated, settings), role: user.role });
+    return json({ limit: settings.daily_limit, used, remaining: Math.max(0, settings.daily_limit - used), nextDailyResetAt: nextDailyResetAt(), resetBalance: updated.reset_balance, resetCap: settings.reset_cap, resetIntervalDays: settings.reset_interval_days, resetGrantAmount: settings.reset_grant_amount, nextResetAt: nextGrantAt(updated, settings), role: user.role });
   }
   if (request.method === "GET" && path === "/api/profile") {
     const defaultModel = ALLOWED_MODELS.has(user.default_model) ? user.default_model : "gpt-6-luna";
@@ -306,6 +332,27 @@ async function handleApi(request, env) {
     if (!object) return safeError("Файл не найден.", 404);
     return new Response(object.body, { headers: { "Content-Type": record.mime || "application/octet-stream", "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(record.name)}`, "Cache-Control": "private, no-store" } });
   }
+  if (request.method === "POST" && path === "/api/transcribe") {
+    if (Number(request.headers.get("Content-Length") || 0) > MAX_VOICE_BYTES + 64_000) return safeError("Запись слишком длинная.", 413);
+    let form;
+    try { form = await request.formData(); } catch { return safeError("Не удалось прочитать запись."); }
+    const audio = form.get("audio");
+    if (!(audio instanceof File) || audio.size < 100 || audio.size > MAX_VOICE_BYTES || !/^(audio\/(webm|mp4|mpeg|wav|x-wav)|video\/mp4)(;|$)/i.test(audio.type)) return safeError("Нужна запись WebM, MP4 или WAV размером до 3 МБ.");
+    const day = dayKey();
+    const used = await usageForUser(env.DB, user.id);
+    if (used >= settings.daily_limit) return safeError("Дневной лимит исчерпан. Попробуйте завтра.", 429);
+    await env.DB.prepare("CREATE TABLE IF NOT EXISTS voice_usage (user_id TEXT NOT NULL, day TEXT NOT NULL, count INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (user_id, day), FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE)").run();
+    const reserved = await env.DB.prepare("INSERT INTO voice_usage (user_id, day, count) VALUES (?, ?, 1) ON CONFLICT(user_id, day) DO UPDATE SET count = count + 1 WHERE count < ? RETURNING count").bind(user.id, day, settings.daily_limit).first();
+    if (!reserved) return safeError("Дневной лимит голосового ввода исчерпан.", 429);
+    try {
+      const text = await transcribeAudio(env, audio);
+      if (!text) throw new Error("Речь не распознана. Попробуйте ещё раз.");
+      return json({ text });
+    } catch (error) {
+      await env.DB.prepare("UPDATE voice_usage SET count = MAX(0, count - 1) WHERE user_id = ? AND day = ?").bind(user.id, day).run();
+      return safeError(error.message || "Не удалось распознать речь.", 502);
+    }
+  }
   if (request.method === "POST" && path === "/api/chat") {
     if (Number(request.headers.get("Content-Length") || 0) > 22_000_000) return safeError("Запрос слишком большой.", 413);
     const raw = await request.text();
@@ -331,7 +378,8 @@ async function handleApi(request, env) {
     try { fullHistory = temporary ? body.history || [] : existing ? JSON.parse(existing.messages_json) : []; } catch { fullHistory = []; }
     if (!Array.isArray(fullHistory)) fullHistory = [];
     const history = fullHistory.slice(-24).filter((entry) => ["user", "assistant"].includes(entry.role) && typeof entry.content === "string").map((entry) => ({ role: entry.role, content: entry.content.slice(0, 12_000) }));
-    const count = await reserveRequest(env.DB, user.id, settings.daily_limit);
+    const requestDay = dayKey();
+    const count = await reserveRequest(env.DB, user.id, settings.daily_limit, requestDay);
     if (count === null) return safeError("Дневной лимит исчерпан. Попробуйте завтра.", 429);
     let stored = [];
     try {
@@ -351,7 +399,7 @@ async function handleApi(request, env) {
         await Promise.allSettled(stored.map((file) => fileStore(env).delete(file.key)));
         await Promise.allSettled(stored.map((file) => env.DB.prepare("DELETE FROM files WHERE id = ? AND user_id = ?").bind(file.id, user.id).run()));
       }
-      await releaseRequest(env.DB, user.id);
+      await releaseRequest(env.DB, user.id, requestDay);
       return safeError(error.message || "Не удалось получить ответ.", 502);
     }
   }
@@ -375,4 +423,4 @@ export default {
   },
 };
 
-export { validateFiles, openAiInput, geminiParts };
+export { validateFiles, openAiInput, geminiParts, dayKey, nextDailyResetAt };

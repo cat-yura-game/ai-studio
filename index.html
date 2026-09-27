@@ -19,6 +19,7 @@
       <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
       <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M12 19V5m0 0-5 5m5-5 5 5"/></symbol>
       <symbol id="i-stop" viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="1.5" fill="currentColor" stroke="none"/></symbol>
+      <symbol id="i-mic" viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="12" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21m-4 0h8"/></symbol>
       <symbol id="i-spark" viewBox="0 0 24 24"><path d="m12 2 1.7 6.3L20 10l-6.3 1.7L12 18l-1.7-6.3L4 10l6.3-1.7L12 2ZM19 17l.6 1.4L21 19l-1.4.6L19 21l-.6-1.4L17 19l1.4-.6L19 17Z"/></symbol>
       <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></symbol>
       <symbol id="i-check" viewBox="0 0 24 24"><path d="m4.5 12.5 5 5 10-11"/></symbol>
@@ -93,7 +94,7 @@
               <textarea id="promptInput" placeholder="Спросите что-нибудь" rows="1" maxlength="12000"></textarea>
               <div class="composer-bottom">
                 <div class="composer-left"><button class="attach-button" id="attachButton" type="button" aria-label="Прикрепить файл" title="Прикрепить файл"><svg><use href="#i-plus"/></svg></button><label class="thinking-picker"><svg><use href="#i-spark"/></svg><select id="thinkingSelect" aria-label="Глубина размышления"></select></label><button class="web-search-toggle" id="webSearchToggle" type="button" aria-label="Поиск в интернете" aria-pressed="false"><svg><use href="#i-globe"/></svg><span>Поиск в интернете</span></button></div>
-                <button class="send-button" id="sendButton" type="submit" aria-label="Отправить сообщение" title="Отправить сообщение"><svg><use href="#i-arrow"/></svg></button>
+                <div class="composer-actions"><button class="voice-button" id="voiceButton" type="button" aria-label="Говорить" title="Говорить"><svg><use href="#i-mic"/></svg></button><button class="send-button" id="sendButton" type="submit" aria-label="Отправить сообщение" title="Отправить сообщение"><svg><use href="#i-arrow"/></svg></button></div>
               </div>
             </form>
             <input id="fileInput" type="file" multiple hidden />
@@ -145,7 +146,7 @@
         <div class="limits-number" id="limitsNumber">—</div>
         <p class="limits-caption">лимита осталось сегодня</p>
         <div class="quota-track limits-track"><div class="quota-fill" id="limitsFill"></div></div>
-        <p class="field-note" id="limitsResetTime">Лимит обновляется каждый день в 00:00 UTC.</p>
+        <p class="field-note" id="limitsResetTime">Лимит автоматически обновляется каждый день в 00:00 по Москве. Бесплатные сбросы хранятся отдельно.</p>
         <div class="dialog-divider"></div>
         <div class="reset-heading"><strong>Бесплатные сбросы</strong><span id="resetBalance">0 из 3</span></div>
         <p class="field-note" id="nextResetText">Один сброс начисляется каждые 7 дней, максимум 3 в запасе.</p>

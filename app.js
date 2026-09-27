@@ -27,6 +27,7 @@ const state = {
   resetIntervalDays: 7,
   resetGrantAmount: 1,
   nextResetAt: null,
+  nextDailyResetAt: null,
   role: "user",
   profile: { displayName: "", aboutText: "", memoryEnabled: true },
   connected: false,
@@ -64,7 +65,7 @@ async function api(path, options = {}) {
   if (!state.apiUrl || !state.token) throw new Error("Для доступа нужна личная ссылка и адрес API.");
   const response = await fetch(apiUrl(path), {
     ...options,
-    headers: { "Authorization": `Bearer ${state.token}`, ...(options.body ? { "Content-Type": "application/json" } : {}), ...options.headers },
+    headers: { "Authorization": `Bearer ${state.token}`, ...(typeof options.body === "string" ? { "Content-Type": "application/json" } : {}), ...options.headers },
   });
   let data;
   try { data = await response.json(); } catch { throw new Error("Сервер вернул неожиданный ответ."); }
@@ -84,7 +85,7 @@ function promptForName() {
   }
 }
 async function connect(askForName = true) {
-  if (!state.apiUrl || !state.token) { state.connected = false; state.chats = []; renderAll(); return; }
+  if (!state.apiUrl || !state.token) { state.connected = false; state.chats = []; clearTimeout(dailyResetTimer); renderAll(); return; }
   try {
     const [profile, chats, personalization] = await Promise.all([api("/api/me"), api("/api/chats"), api("/api/profile")]);
     state.connected = true;
@@ -95,6 +96,7 @@ async function connect(askForName = true) {
     state.resetIntervalDays = profile.resetIntervalDays;
     state.resetGrantAmount = profile.resetGrantAmount;
     state.nextResetAt = profile.nextResetAt;
+    state.nextDailyResetAt = profile.nextDailyResetAt;
     state.role = profile.role || "user";
     state.profile = personalization;
     state.defaultModel = MODELS.find((model) => model.id === personalization.defaultModel)?.id || MODELS[0].id;
@@ -103,14 +105,40 @@ async function connect(askForName = true) {
     state.currentId = state.chats[0]?.id || null;
     state.model = state.chats[0]?.model || state.defaultModel;
     renderAll();
+    scheduleDailyReset();
     if (askForName) promptForName();
   } catch (error) {
     state.connected = false;
     state.chats = [];
+    clearTimeout(dailyResetTimer);
     renderAll();
     showToast(error.message);
   }
 }
+let dailyResetTimer;
+async function refreshDailyLimit() {
+  if (!state.connected) return;
+  try {
+    const profile = await api("/api/me");
+    state.remaining = profile.remaining;
+    state.limit = profile.limit;
+    state.resetBalance = profile.resetBalance;
+    state.nextResetAt = profile.nextResetAt;
+    state.nextDailyResetAt = profile.nextDailyResetAt;
+    renderQuota();
+    scheduleDailyReset();
+  } catch {
+    dailyResetTimer = setTimeout(refreshDailyLimit, 30_000);
+  }
+}
+function scheduleDailyReset() {
+  clearTimeout(dailyResetTimer);
+  if (!state.connected || !state.nextDailyResetAt) return;
+  dailyResetTimer = setTimeout(refreshDailyLimit, Math.max(1000, Math.min(2_147_483_647, state.nextDailyResetAt - Date.now() + 1000)));
+}
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden && state.connected && state.nextDailyResetAt && Date.now() >= state.nextDailyResetAt) refreshDailyLimit();
+});
 function renderQuota() {
   const percent = Math.max(0, Math.min(100, Math.round((state.remaining / Math.max(1, state.limit)) * 100)));
   $("quotaPercent").textContent = state.connected ? `${percent}%` : "—";
@@ -324,12 +352,71 @@ function renderAttachments() {
     holder.append(chip);
   });
 }
-function renderAll() { renderModels(); renderThinking(); renderWebSearch(); renderList(); renderMessages(); renderQuota(); renderAttachments(); updateSend(); }
+function renderAll() { renderModels(); renderThinking(); renderWebSearch(); renderList(); renderMessages(); renderQuota(); renderAttachments(); updateSend(); renderVoice(); }
 function updateSend() {
   const ready = !!$("promptInput").value.trim() || state.files.length > 0;
   $("sendButton").classList.toggle("ready", ready || state.busy);
   $("sendButton").setAttribute("aria-label", state.busy ? "Ожидание ответа" : "Отправить сообщение");
   $("sendButton").innerHTML = state.busy ? '<svg><use href="#i-stop"/></svg>' : '<svg><use href="#i-arrow"/></svg>';
+}
+let voiceRecorder = null;
+let voiceProcessing = false;
+let voiceTimeout = null;
+function renderVoice() {
+  const button = $("voiceButton");
+  const recording = voiceRecorder?.state === "recording";
+  button.classList.toggle("recording", recording);
+  button.disabled = voiceProcessing || (state.busy && !recording);
+  button.setAttribute("aria-label", recording ? "Остановить запись" : voiceProcessing ? "Распознаём речь" : "Говорить");
+  button.title = button.getAttribute("aria-label");
+  button.innerHTML = recording ? '<svg><use href="#i-stop"/></svg>' : '<svg><use href="#i-mic"/></svg>';
+  $("promptInput").placeholder = recording ? "Говорите… Нажмите на микрофон, чтобы отправить" : voiceProcessing ? "Распознаём речь…" : "Спросите что-нибудь";
+}
+async function toggleVoice() {
+  if (voiceRecorder?.state === "recording") { voiceRecorder.stop(); return; }
+  if (voiceProcessing || state.busy) return;
+  if (!state.connected) { showToast("Для голосового ввода нужна личная ссылка доступа."); openSettings(); return; }
+  if (state.remaining <= 0) { showToast("Дневной лимит исчерпан. Попробуйте завтра."); return; }
+  if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) { showToast("Этот браузер не поддерживает запись с микрофона."); return; }
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const mimeType = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"].find((type) => MediaRecorder.isTypeSupported(type));
+    const recorder = new MediaRecorder(stream, mimeType ? { mimeType, audioBitsPerSecond: 64_000 } : { audioBitsPerSecond: 64_000 });
+    const chunks = [];
+    voiceRecorder = recorder;
+    recorder.addEventListener("dataavailable", (event) => { if (event.data.size) chunks.push(event.data); });
+    recorder.addEventListener("error", () => { showToast("Не удалось записать звук."); if (recorder.state === "recording") recorder.stop(); });
+    recorder.addEventListener("stop", async () => {
+      clearTimeout(voiceTimeout);
+      stream.getTracks().forEach((track) => track.stop());
+      voiceRecorder = null;
+      voiceProcessing = true;
+      renderVoice();
+      let transcribed = false;
+      try {
+        const type = recorder.mimeType || mimeType || "audio/webm";
+        const audio = new Blob(chunks, { type });
+        if (audio.size < 100) throw new Error("Запись пуста. Попробуйте ещё раз.");
+        if (audio.size > 3 * 1024 * 1024) throw new Error("Запись слишком длинная. Говорите не дольше минуты.");
+        const form = new FormData();
+        form.set("audio", audio, type.includes("mp4") ? "speech.mp4" : "speech.webm");
+        const result = await api("/api/transcribe", { method: "POST", body: form });
+        $("promptInput").value = [$("promptInput").value.trim(), result.text].filter(Boolean).join(" ");
+        $("promptInput").dispatchEvent(new Event("input"));
+        transcribed = true;
+      } catch (error) { showToast(error.message); }
+      finally { voiceProcessing = false; renderVoice(); }
+      if (transcribed) await sendMessage();
+    });
+    recorder.start();
+    voiceTimeout = setTimeout(() => { if (recorder.state === "recording") recorder.stop(); }, 60_000);
+    renderVoice();
+    showToast("Говорите. Нажмите микрофон ещё раз, чтобы отправить.");
+  } catch (error) {
+    stream?.getTracks().forEach((track) => track.stop());
+    showToast(error.name === "NotAllowedError" ? "Разрешите доступ к микрофону в браузере." : "Не удалось включить микрофон.");
+  }
 }
 function newChat() {
   state.currentId = null;
@@ -366,7 +453,7 @@ function readFile(file) {
   });
 }
 async function sendMessage() {
-  if (state.busy) return;
+  if (state.busy || voiceRecorder?.state === "recording" || voiceProcessing) return;
   if (!state.connected) { showToast("Для чата нужна личная ссылка доступа."); openSettings(); return; }
   if (currentChat() && !MODELS.some((model) => model.id === currentChat().model)) { showToast("Модель этого чата удалена. Начните новый чат."); return; }
   const content = $("promptInput").value.trim();
@@ -410,6 +497,7 @@ async function sendMessage() {
   } finally {
     state.busy = false;
     renderAll();
+    if (state.nextDailyResetAt && Date.now() >= state.nextDailyResetAt) refreshDailyLimit();
     $("promptInput").focus();
   }
 }
@@ -511,6 +599,7 @@ $("searchInput").addEventListener("input", renderSearch);
 $("promptInput").addEventListener("input", () => { const input = $("promptInput"); input.style.height = "auto"; input.style.height = `${Math.min(input.scrollHeight, 190)}px`; updateSend(); });
 $("promptInput").addEventListener("keydown", (event) => { if (event.key === "Enter" && !event.shiftKey && !event.isComposing) { event.preventDefault(); sendMessage(); } });
 $("composerForm").addEventListener("submit", (event) => { event.preventDefault(); sendMessage(); });
+$("voiceButton").addEventListener("click", toggleVoice);
 $("attachButton").addEventListener("click", () => $("fileInput").click());
 $("fileInput").addEventListener("change", (event) => {
   for (const file of event.target.files) {
