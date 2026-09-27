@@ -1,5 +1,7 @@
 const MODELS = [
   { id: "gpt-6-luna", name: "GPT-6 Luna", provider: "OpenAI", description: "Быстрые повседневные задачи" },
+  { id: "gpt-6-astra", name: "GPT-6 Astra", provider: "AgentRouter", description: "Сложные задачи и анализ" },
+  { id: "claude-opus-5", name: "Claude Opus 5", provider: "AgentRouter", description: "Глубокий анализ и тексты" },
   { id: "gemini-3.8-flash", name: "Gemini 3.8 Flash", provider: "Google", description: "Быстрые ответы" },
 ];
 
@@ -130,7 +132,7 @@ function renderModels() {
   $("selectedModelName").textContent = selectedModel().name;
   const menu = $("modelMenu");
   menu.replaceChildren();
-  for (const provider of ["OpenAI", "Google"]) {
+  for (const provider of ["OpenAI", "Google", "AgentRouter"]) {
     const title = document.createElement("div");
     title.className = "model-group-label";
     title.textContent = provider;
@@ -163,7 +165,7 @@ function renderModels() {
 }
 function renderThinking() {
   const select = $("thinkingSelect");
-  const choices = state.model === "gpt-6-luna" ? [["none", "Без размышления"], ["low", "Быстро"], ["medium", "Стандартно"], ["high", "Глубоко"], ["xhigh", "Очень глубоко"], ["max", "Максимально"]] : [["low", "Быстро"], ["medium", "Стандартно"], ["high", "Глубоко"]];
+  const choices = ["gpt-6-luna", "gpt-6-astra"].includes(state.model) ? [["none", "Без размышления"], ["low", "Быстро"], ["medium", "Стандартно"], ["high", "Глубоко"], ["xhigh", "Очень глубоко"], ["max", "Максимально"]] : [["low", "Быстро"], ["medium", "Стандартно"], ["high", "Глубоко"]];
   select.replaceChildren();
   for (const [value, label] of choices) { const option = document.createElement("option"); option.value = value; option.textContent = label; select.append(option); }
   select.value = selectedThinking();

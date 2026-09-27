@@ -188,3 +188,30 @@ test("attachments persist for their owner and are removed with the chat", async 
   assert.equal(removed.status, 200);
   assert.equal(objects.size, 0);
 });
+
+test("AgentRouter GPT and Claude use their respective API formats", async (context) => {
+  const db = database();
+  setupUser(db, "user-a", TOKEN_A);
+  const calls = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, options) => {
+    calls.push({ url, headers: options.headers, body: JSON.parse(options.body) });
+    return Response.json(url.endsWith("/messages") ? { content: [{ type: "text", text: "Ответ Claude" }] } : { choices: [{ message: { content: "Ответ Astra" } }] });
+  };
+  context.after(() => { globalThis.fetch = originalFetch; db.sqlite.close(); });
+  const environment = { ...env(db), AGENTROUTER_API_KEY: "test-router" };
+  for (const [model, thinking] of [["gpt-6-astra", "high"], ["claude-opus-5", "low"]]) {
+    const response = await worker.fetch(makeRequest("/api/chat", TOKEN_A, "POST", { model, thinking, content: "Привет", files: [] }), environment);
+    assert.equal(response.status, 200);
+    assert.ok((await response.json()).answer.startsWith("Ответ"));
+  }
+  assert.equal(calls[0].url, "https://co.agentrouter.org/v1/chat/completions");
+  assert.equal(calls[0].body.model, "gpt-6-astra");
+  assert.equal(calls[0].body.reasoning_effort, "high");
+  assert.equal(calls[0].headers.Authorization, "Bearer test-router");
+  assert.equal(calls[1].url, "https://co.agentrouter.org/v1/messages");
+  assert.equal(calls[1].body.model, "claude-opus-5");
+  assert.equal(calls[1].body.thinking.budget_tokens, 1024);
+  assert.equal(calls[1].headers["x-api-key"], "test-router");
+  assert.equal((await (await worker.fetch(makeRequest("/api/chats", TOKEN_A), environment)).json()).chats.length, 2);
+});

@@ -1,7 +1,8 @@
 const DAY_MS = 86_400_000;
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
-const ALLOWED_MODELS = new Set(["gpt-6-luna", "gemini-3.8-flash"]);
-const THINKING = { "gpt-6-luna": new Set(["none", "low", "medium", "high", "xhigh", "max"]), "gemini-3.8-flash": new Set(["low", "medium", "high"]) };
+const ALLOWED_MODELS = new Set(["gpt-6-luna", "gemini-3.8-flash", "gpt-6-astra", "claude-opus-5"]);
+const THINKING = { "gpt-6-luna": new Set(["none", "low", "medium", "high", "xhigh", "max"]), "gemini-3.8-flash": new Set(["low", "medium", "high"]), "gpt-6-astra": new Set(["none", "low", "medium", "high", "xhigh", "max"]), "claude-opus-5": new Set(["low", "medium", "high"]) };
+const MODEL_NAMES = { "gpt-6-luna": "GPT-6 Luna", "gemini-3.8-flash": "Gemini 3.8 Flash", "gpt-6-astra": "GPT-6 Astra", "claude-opus-5": "Claude Opus 5" };
 const OPENAI_FILE_EXTENSIONS = new Set(["pdf", "txt", "md", "json", "csv", "html", "xml", "js", "ts", "py", "css", "doc", "docx", "rtf", "odt", "ppt", "pptx", "xls", "xlsx"]);
 const GEMINI_MEDIA_TYPES = new Set(["application/pdf", "image/png", "image/jpeg", "image/webp", "image/heic", "image/heif", "audio/mpeg", "audio/mp3", "audio/wav", "audio/x-wav", "audio/mp4", "audio/ogg", "audio/flac", "video/mp4", "video/webm", "video/quicktime"]);
 
@@ -42,6 +43,7 @@ function validateFiles(files, model) {
     const ext = file.name.split(".").pop().toLowerCase();
     if (model === "gpt-6-luna" && !file.type.startsWith("image/") && !OPENAI_FILE_EXTENSIONS.has(ext)) throw new Error(`GPT-6 Luna не поддерживает файл «${file.name}».`);
     if (model === "gemini-3.8-flash" && !GEMINI_MEDIA_TYPES.has(file.type) && !isTextFile(file)) throw new Error(`Gemini 3.8 Flash не поддерживает файл «${file.name}».`);
+    if (["gpt-6-astra", "claude-opus-5"].includes(model) && !["image/png", "image/jpeg", "image/webp"].includes(file.type) && !isTextFile(file)) throw new Error(`${MODEL_NAMES[model]} пока поддерживает только изображения PNG/JPEG/WebP и текстовые файлы.`);
   }
 }
 async function persistFiles(env, userId, chatId, files) {
@@ -177,10 +179,48 @@ async function callGemini(env, history, message, files, thinking, instructions) 
   if (!answer) throw new Error("Модель не вернула текстовый ответ. Попробуйте ещё раз.");
   return answer;
 }
+function routerContent(message, files, anthropic = false) {
+  const content = [{ type: "text", text: message || "Проанализируй приложенный файл." }];
+  for (const file of files) {
+    if (isTextFile(file)) content.push({ type: "text", text: `Файл ${file.name}:\n${decodeBase64(file.data)}` });
+    else if (anthropic) content.push({ type: "image", source: { type: "base64", media_type: file.type, data: file.data } });
+    else content.push({ type: "image_url", image_url: { url: `data:${file.type};base64,${file.data}` } });
+  }
+  return content;
+}
+async function callRouterGpt(env, history, message, files, thinking, instructions) {
+  if (!env.AGENTROUTER_API_KEY) throw new Error("Ключ AgentRouter ещё не добавлен в Worker.");
+  const messages = [{ role: "system", content: instructions }, ...history.slice(-24).map(({ role, content }) => ({ role, content })), { role: "user", content: routerContent(message, files) }];
+  const response = await fetch("https://co.agentrouter.org/v1/chat/completions", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${env.AGENTROUTER_API_KEY}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ model: "gpt-6-astra", messages, reasoning_effort: thinking, max_completion_tokens: 8192 }),
+  });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error?.message || "AgentRouter временно недоступен.");
+  const answer = data.choices?.[0]?.message?.content;
+  if (typeof answer !== "string" || !answer.trim()) throw new Error("Модель не вернула текстовый ответ. Попробуйте ещё раз.");
+  return answer.trim();
+}
+async function callRouterClaude(env, history, message, files, thinking, instructions) {
+  if (!env.AGENTROUTER_API_KEY) throw new Error("Ключ AgentRouter ещё не добавлен в Worker.");
+  const messages = [...history.slice(-24).map(({ role, content }) => ({ role, content })), { role: "user", content: routerContent(message, files, true) }];
+  const budget = { low: 1024, medium: 4096, high: 8192 }[thinking];
+  const response = await fetch("https://co.agentrouter.org/v1/messages", {
+    method: "POST",
+    headers: { "x-api-key": env.AGENTROUTER_API_KEY, "anthropic-version": "2023-06-01", "Content-Type": "application/json" },
+    body: JSON.stringify({ model: "claude-opus-5", system: instructions, messages, max_tokens: 16384, thinking: { type: "enabled", budget_tokens: budget } }),
+  });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error?.message || "AgentRouter временно недоступен.");
+  const answer = (data.content || []).filter((part) => part.type === "text").map((part) => part.text).join("\n").trim();
+  if (!answer) throw new Error("Модель не вернула текстовый ответ. Попробуйте ещё раз.");
+  return answer;
+}
 function rowToChat(row) {
   let messages;
   try { messages = JSON.parse(row.messages_json); } catch { messages = []; }
-  return { id: row.id, title: row.title, model: row.model, modelName: row.model === "gpt-6-luna" ? "GPT-6 Luna" : "Gemini 3.8 Flash", messages, updatedAt: row.updated_at };
+  return { id: row.id, title: row.title, model: row.model, modelName: MODEL_NAMES[row.model] || row.model, messages, updatedAt: row.updated_at };
 }
 async function memoryFor(db, userId, currentChatId, prompt) {
   const { results } = await db.prepare("SELECT id, title, messages_json, updated_at FROM chats WHERE user_id = ? AND id != ? ORDER BY updated_at DESC").bind(userId, currentChatId || "").all();
@@ -320,7 +360,10 @@ async function handleApi(request, env) {
       const memory = !temporary && user.memory_enabled ? await memoryFor(env.DB, user.id, chatId, content) : "";
       const instructions = instructionsFor(user, memory);
       const modelFiles = files.length || temporary ? files : await priorFilesForContext(env, user.id, fullHistory, content);
-      const answer = model === "gpt-6-luna" ? await callOpenAI(env, history, content, modelFiles, thinking, instructions) : await callGemini(env, history, content, modelFiles, thinking, instructions);
+      const answer = model === "gpt-6-luna" ? await callOpenAI(env, history, content, modelFiles, thinking, instructions)
+        : model === "gemini-3.8-flash" ? await callGemini(env, history, content, modelFiles, thinking, instructions)
+        : model === "gpt-6-astra" ? await callRouterGpt(env, history, content, modelFiles, thinking, instructions)
+        : await callRouterClaude(env, history, content, modelFiles, thinking, instructions);
       const publicFiles = stored.map(({ id, name, type, size }) => ({ id, name, type, size }));
       if (temporary) return json({ chatId: "temporary", answer, remaining: Math.max(0, settings.daily_limit - count) });
       const messages = [...fullHistory, { role: "user", content, files: publicFiles }, { role: "assistant", content: answer }];
