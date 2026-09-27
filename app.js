@@ -1,7 +1,7 @@
 const MODELS = [
   { id: "gpt-6-luna", name: "GPT-6 Luna", provider: "OpenAI", description: "Быстрые повседневные задачи" },
-  { id: "gpt-6-astra", name: "GPT-6 Astra", provider: "AgentRouter", description: "Сложные задачи и анализ" },
-  { id: "claude-opus-5", name: "Claude Opus 5", provider: "AgentRouter", description: "Глубокий анализ и тексты" },
+  { id: "gpt-6-astra", name: "GPT-6 Astra", provider: "OpenAI", description: "Сложные задачи и анализ" },
+  { id: "claude-opus-5", name: "Claude Opus 5", provider: "Anthropic", description: "Глубокий анализ и тексты" },
   { id: "gemini-3.8-flash", name: "Gemini 3.8 Flash", provider: "Google", description: "Быстрые ответы" },
 ];
 
@@ -129,10 +129,11 @@ function renderQuota() {
   if (state.role === "admin" && state.token) $("adminLink").href = `./admin.html#invite=${encodeURIComponent(state.token)}`;
 }
 function renderModels() {
-  $("selectedModelName").textContent = selectedModel().name;
+  $("selectedModelName").textContent = state.connected ? selectedModel().name : "Войти для выбора модели";
   const menu = $("modelMenu");
   menu.replaceChildren();
-  for (const provider of ["OpenAI", "Google", "AgentRouter"]) {
+  if (!state.connected) { menu.classList.add("hidden"); $("modelTrigger").setAttribute("aria-expanded", "false"); return; }
+  for (const provider of ["OpenAI", "Anthropic", "Google"]) {
     const title = document.createElement("div");
     title.className = "model-group-label";
     title.textContent = provider;
@@ -391,7 +392,7 @@ $("sidebarToggle").addEventListener("click", () => $("appShell").classList.add("
 $("desktopOpen").addEventListener("click", () => $("appShell").classList.remove("sidebar-hidden"));
 $("mobileMenu").addEventListener("click", () => $("appShell").classList.add("mobile-open"));
 $("mobileScrim").addEventListener("click", closeMobile);
-$("modelTrigger").addEventListener("click", () => { const open = $("modelMenu").classList.toggle("hidden"); $("modelTrigger").setAttribute("aria-expanded", String(!open)); });
+$("modelTrigger").addEventListener("click", () => { if (!state.connected) { openSettings(); return; } const open = $("modelMenu").classList.toggle("hidden"); $("modelTrigger").setAttribute("aria-expanded", String(!open)); });
 $("thinkingSelect").addEventListener("change", () => { state.thinking[state.model] = $("thinkingSelect").value; localStorage.setItem("chat_thinking", JSON.stringify(state.thinking)); });
 document.addEventListener("click", (event) => { if (!event.target.closest(".model-control")) { $("modelMenu").classList.add("hidden"); $("modelTrigger").setAttribute("aria-expanded", "false"); } });
 $("settingsButton").addEventListener("click", openSettings);
