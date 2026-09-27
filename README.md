@@ -1,6 +1,6 @@
 # Чат с ИИ — бесплатная бета
 
-Сайт для GitHub Pages и отдельный Cloudflare Worker. GPT-6 Luna вызывается через нативный OpenAI Responses API, Gemini 3.8 Flash — через нативный Gemini API. GPT-6 Astra и Claude Opus 5 направляются через AgentRouter. Регистрация и оплата отсутствуют: у каждого пользователя личная секретная ссылка.
+Сайт для GitHub Pages и отдельный Cloudflare Worker. GPT-6 Luna вызывается через нативный OpenAI Responses API, Gemini 3.8 Flash — через нативный Gemini API. Регистрация и оплата отсутствуют: у каждого пользователя личная секретная ссылка.
 
 ## Возможности
 
@@ -27,7 +27,7 @@ npm run preview
 3. Создайте KV namespace: `npx wrangler kv namespace create ai-chat-files`.
 4. Скопируйте `worker/wrangler.example.toml` в `worker/wrangler.toml`. Впишите `database_id` из шага 2, `id` KV namespace из шага 3 и точный `ALLOWED_ORIGIN` сайта без завершающего `/`. Например, для GitHub Pages проекта origin равен `https://USERNAME.github.io`, даже если путь сайта содержит имя репозитория.
 5. Создайте таблицы из корня проекта: `npx wrangler d1 execute ai-chat --remote --file worker/schema.sql`.
-6. Из папки `worker` добавьте ключи **только как секреты**: `npx wrangler secret put OPENAI_API_KEY`, затем `npx wrangler secret put GEMINI_API_KEY` и `npx wrangler secret put AGENTROUTER_API_KEY`. Создайте длинный случайный пароль администратора, сохраните его SHA-256 в секрете `ADMIN_PASSWORD_HASH` через `npx wrangler secret put ADMIN_PASSWORD_HASH`.
+6. Из папки `worker` добавьте ключи **только как секреты**: `npx wrangler secret put OPENAI_API_KEY`, затем `npx wrangler secret put GEMINI_API_KEY`. Создайте длинный случайный пароль администратора, сохраните его SHA-256 в секрете `ADMIN_PASSWORD_HASH` через `npx wrangler secret put ADMIN_PASSWORD_HASH`.
 7. Из папки `worker` выполните `npx wrangler deploy` и запишите полученный URL Worker.
 
 Ключи моделей нельзя добавлять в `config.js`, GitHub или HTML. Ключи, уже отправленные в чат, лучше перевыпустить перед публичным запуском.
@@ -52,8 +52,7 @@ node scripts/create-invite.mjs https://USERNAME.github.io/REPOSITORY/ --admin
 
 ## Ограничения
 
-- Модель может прочитать поддерживаемый формат, а не произвольный бинарный файл. Пользователь может выбрать любой файл, но Worker отклонит формат, который выбранная модель не поддерживает. GPT-6 Luna принимает изображения и [поддерживаемые документы](https://developers.openai.com/api/docs/guides/file-inputs); Gemini 3.8 Flash — изображения, PDF, поддерживаемые аудио/видео и текстовые файлы. Модели AgentRouter пока принимают PNG/JPEG/WebP и текстовые файлы.
-- GPT-6 Astra и Claude Opus 5 используют API `agentrouter.org`, для которого был выдан ключ. Доступ к API может зависеть от разрешённого клиента; перед выдачей доступа проверьте ответы обеих моделей.
+- Модель может прочитать поддерживаемый формат, а не произвольный бинарный файл. Пользователь может выбрать любой файл, но Worker отклонит формат, который выбранная модель не поддерживает. GPT-6 Luna принимает изображения и [поддерживаемые документы](https://developers.openai.com/api/docs/guides/file-inputs); Gemini 3.8 Flash — изображения, PDF, поддерживаемые аудио/видео и текстовые файлы.
 - Память ищет по словам из запроса и недавности. Она добавляет до трёх подходящих диалогов, а не весь архив целиком. Отключение памяти исключает другие диалоги из запросов к модели.
 - Временный чат не сохраняет файлы в KV, поэтому вложения в нём исчезают вместе со страницей. KV может отдавать новые вложения с задержкой в других регионах из-за распределённой репликации.
 - Сутки для лимита считаются по UTC. Количество запросов ограничено, но стоимость токенов зависит от размера контекста, файлов и глубины размышления. Настройте бюджетные ограничения и мониторинг у провайдеров перед расширением доступа.

@@ -1,17 +1,16 @@
 const MODELS = [
   { id: "gpt-6-luna", name: "GPT-6 Luna", provider: "OpenAI", description: "Быстрые повседневные задачи" },
-  { id: "gpt-6-astra", name: "GPT-6 Astra", provider: "OpenAI", description: "Сложные задачи и анализ" },
-  { id: "claude-opus-5", name: "Claude Opus 5", provider: "Anthropic", description: "Глубокий анализ и тексты" },
   { id: "gemini-3.8-flash", name: "Gemini 3.8 Flash", provider: "Google", description: "Быстрые ответы" },
 ];
 
 const $ = (id) => document.getElementById(id);
 const initialApi = String(window.CHAT_API_URL || "").replace(/\/$/, "");
+const initialModel = MODELS.find((model) => model.id === localStorage.getItem("chat_default_model"))?.id || MODELS[0].id;
 const state = {
   apiUrl: initialApi,
   token: localStorage.getItem("chat_access_token") || "",
-  model: localStorage.getItem("chat_default_model") || MODELS[0].id,
-  defaultModel: localStorage.getItem("chat_default_model") || MODELS[0].id,
+  model: initialModel,
+  defaultModel: initialModel,
   thinking: JSON.parse(localStorage.getItem("chat_thinking") || "{}"),
   chats: [],
   currentId: null,
@@ -32,7 +31,7 @@ const state = {
 
 function id() { return crypto.randomUUID(); }
 function currentChat() { return state.currentId === "temporary" ? state.tempChat : state.chats.find((chat) => chat.id === state.currentId) || null; }
-function selectedModel() { return MODELS.find((model) => model.id === state.model) || MODELS[0]; }
+function selectedModel() { return MODELS.find((model) => model.id === state.model) || { id: state.model, name: `${currentChat()?.modelName || "Модель"} · недоступна` }; }
 function selectedThinking() { return state.thinking[state.model] || "medium"; }
 function apiUrl(path) { return `${state.apiUrl}${path}`; }
 function showToast(message) {
@@ -95,7 +94,7 @@ async function connect(askForName = true) {
     state.nextResetAt = profile.nextResetAt;
     state.role = profile.role || "user";
     state.profile = personalization;
-    state.defaultModel = personalization.defaultModel || MODELS[0].id;
+    state.defaultModel = MODELS.find((model) => model.id === personalization.defaultModel)?.id || MODELS[0].id;
     localStorage.setItem("chat_default_model", state.defaultModel);
     state.chats = chats.chats;
     state.currentId = state.chats[0]?.id || null;
@@ -133,7 +132,7 @@ function renderModels() {
   const menu = $("modelMenu");
   menu.replaceChildren();
   if (!state.connected) { menu.classList.add("hidden"); $("modelTrigger").setAttribute("aria-expanded", "false"); return; }
-  for (const provider of ["OpenAI", "Anthropic", "Google"]) {
+  for (const provider of ["OpenAI", "Google"]) {
     const title = document.createElement("div");
     title.className = "model-group-label";
     title.textContent = provider;
@@ -148,7 +147,7 @@ function renderModels() {
       option.querySelector("strong").textContent = model.name;
       option.querySelector("small").textContent = model.description;
       option.addEventListener("click", () => {
-        if (currentChat()?.messages.length && currentChat().model !== model.id) {
+        if (currentChat() && currentChat().model !== model.id) {
           state.currentId = null;
           showToast("Для другой модели открыт новый чат");
         }
@@ -166,10 +165,11 @@ function renderModels() {
 }
 function renderThinking() {
   const select = $("thinkingSelect");
-  const choices = ["gpt-6-luna", "gpt-6-astra"].includes(state.model) ? [["none", "Без размышления"], ["low", "Быстро"], ["medium", "Стандартно"], ["high", "Глубоко"], ["xhigh", "Очень глубоко"], ["max", "Максимально"]] : [["low", "Быстро"], ["medium", "Стандартно"], ["high", "Глубоко"]];
+  const choices = state.model === "gpt-6-luna" ? [["none", "Без размышления"], ["low", "Быстро"], ["medium", "Стандартно"], ["high", "Глубоко"], ["xhigh", "Очень глубоко"], ["max", "Максимально"]] : [["low", "Быстро"], ["medium", "Стандартно"], ["high", "Глубоко"]];
   select.replaceChildren();
   for (const [value, label] of choices) { const option = document.createElement("option"); option.value = value; option.textContent = label; select.append(option); }
   select.value = selectedThinking();
+  select.disabled = !MODELS.some((model) => model.id === state.model);
 }
 function renderList() {
   const list = $("chatList");
@@ -317,6 +317,7 @@ function readFile(file) {
 async function sendMessage() {
   if (state.busy) return;
   if (!state.connected) { showToast("Для чата нужна личная ссылка доступа."); openSettings(); return; }
+  if (currentChat() && !MODELS.some((model) => model.id === currentChat().model)) { showToast("Модель этого чата удалена. Начните новый чат."); return; }
   const content = $("promptInput").value.trim();
   const attached = [...state.files];
   if (!content && attached.length === 0) return;

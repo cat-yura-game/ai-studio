@@ -189,29 +189,20 @@ test("attachments persist for their owner and are removed with the chat", async 
   assert.equal(objects.size, 0);
 });
 
-test("AgentRouter GPT and Claude use their respective API formats", async (context) => {
+test("removed models cannot spend a request or become the default", async () => {
   const db = database();
   setupUser(db, "user-a", TOKEN_A);
-  const calls = [];
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = async (url, options) => {
-    calls.push({ url, headers: options.headers, body: JSON.parse(options.body) });
-    return Response.json(url.endsWith("/messages") ? { content: [{ type: "text", text: "Ответ Claude" }] } : { choices: [{ message: { content: "Ответ Astra" } }] });
-  };
-  context.after(() => { globalThis.fetch = originalFetch; db.sqlite.close(); });
-  const environment = { ...env(db), AGENTROUTER_API_KEY: "test-router" };
-  for (const [model, thinking] of [["gpt-6-astra", "high"], ["claude-opus-5", "low"]]) {
-    const response = await worker.fetch(makeRequest("/api/chat", TOKEN_A, "POST", { model, thinking, content: "Привет", files: [] }), environment);
-    assert.equal(response.status, 200);
-    assert.ok((await response.json()).answer.startsWith("Ответ"));
+  for (const model of ["gpt-6-astra", "claude-opus-5"]) {
+    const response = await worker.fetch(makeRequest("/api/chat", TOKEN_A, "POST", { model, thinking: "low", content: "Привет", files: [] }), env(db));
+    assert.equal(response.status, 400);
+    assert.equal((await response.json()).error, "Неизвестная модель.");
   }
-  assert.equal(calls[0].url, "https://agentrouter.org/v1/chat/completions");
-  assert.equal(calls[0].body.model, "gpt-6-astra");
-  assert.equal(calls[0].body.reasoning_effort, "high");
-  assert.equal(calls[0].headers.Authorization, "Bearer test-router");
-  assert.equal(calls[1].url, "https://agentrouter.org/v1/messages");
-  assert.equal(calls[1].body.model, "claude-opus-5");
-  assert.equal(calls[1].body.thinking.budget_tokens, 1024);
-  assert.equal(calls[1].headers["x-api-key"], "test-router");
-  assert.equal((await (await worker.fetch(makeRequest("/api/chats", TOKEN_A), environment)).json()).chats.length, 2);
+  assert.equal(db.sqlite.prepare("SELECT COUNT(*) AS total FROM usage").get().total, 0);
+  db.sqlite.prepare("UPDATE users SET default_model = 'claude-opus-5' WHERE id = 'user-a'").run();
+  const oldProfile = await worker.fetch(makeRequest("/api/profile", TOKEN_A), env(db));
+  assert.equal((await oldProfile.json()).defaultModel, "gpt-6-luna");
+  assert.equal(db.sqlite.prepare("SELECT default_model FROM users WHERE id = 'user-a'").get().default_model, "gpt-6-luna");
+  const profile = await worker.fetch(makeRequest("/api/profile", TOKEN_A, "PUT", { displayName: "", aboutText: "", defaultModel: "gpt-6-astra", memoryEnabled: true }), env(db));
+  assert.equal((await profile.json()).defaultModel, "gpt-6-luna");
+  db.sqlite.close();
 });
