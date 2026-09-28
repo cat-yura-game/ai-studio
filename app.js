@@ -3,8 +3,8 @@ import { renderMarkdown } from "./markdown.js";
 const MODELS = [
   { id: "gpt-6-luna", name: "GPT-6 Luna", provider: "OpenAI", description: "Технические работы", disabled: true },
   { id: "gemini-3.8-flash", name: "Gemini 3.8 Flash", provider: "Google", description: "Быстрые ответы" },
-  { id: "nemotron-3-ultra", name: "Nemotron 3 Ultra", provider: "OpenRouter", description: "Сложные задачи и рассуждения" },
-  { id: "qwen3.8-27b", name: "Qwen3.8 27B", provider: "OpenRouter", description: "Текст и изображения" },
+  { id: "nemotron-3-ultra", name: "Nemotron 3 Ultra", provider: "NVIDIA", description: "Сложные задачи и рассуждения" },
+  { id: "qwen3.8-27b", name: "Qwen3.8 27B", provider: "Alibaba Cloud", description: "Текст и изображения" },
 ];
 
 const $ = (id) => document.getElementById(id);
@@ -166,7 +166,7 @@ function renderModels() {
   const menu = $("modelMenu");
   menu.replaceChildren();
   if (!state.connected) { menu.classList.add("hidden"); $("modelTrigger").setAttribute("aria-expanded", "false"); return; }
-  for (const provider of ["OpenAI", "Google", "OpenRouter"]) {
+  for (const provider of ["OpenAI", "Google", "NVIDIA", "Alibaba Cloud"]) {
     const title = document.createElement("div");
     title.className = "model-group-label";
     title.textContent = provider;
