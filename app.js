@@ -1,13 +1,13 @@
 import { renderMarkdown } from "./markdown.js";
 
 const MODELS = [
-  { id: "gpt-6-luna", name: "GPT-6 Luna", provider: "OpenAI", description: "Быстрые повседневные задачи" },
+  { id: "gpt-6-luna", name: "GPT-6 Luna", provider: "OpenAI", description: "Технические работы", disabled: true },
   { id: "gemini-3.8-flash", name: "Gemini 3.8 Flash", provider: "Google", description: "Быстрые ответы" },
 ];
 
 const $ = (id) => document.getElementById(id);
 const initialApi = String(window.CHAT_API_URL || "").replace(/\/$/, "");
-const initialModel = MODELS.find((model) => model.id === localStorage.getItem("chat_default_model"))?.id || MODELS[0].id;
+const initialModel = MODELS.find((model) => model.id === localStorage.getItem("chat_default_model") && !model.disabled)?.id || "gemini-3.8-flash";
 const state = {
   apiUrl: initialApi,
   token: localStorage.getItem("chat_access_token") || "",
@@ -36,6 +36,7 @@ const state = {
 function id() { return crypto.randomUUID(); }
 function currentChat() { return state.currentId === "temporary" ? state.tempChat : state.chats.find((chat) => chat.id === state.currentId) || null; }
 function selectedModel() { return MODELS.find((model) => model.id === state.model) || { id: state.model, name: `${currentChat()?.modelName || "Модель"} · недоступна` }; }
+function modelAvailable(id) { return MODELS.some((model) => model.id === id && !model.disabled); }
 function selectedThinking() { return state.thinking[state.model] || "medium"; }
 function apiUrl(path) { return `${state.apiUrl}${path}`; }
 function showToast(message) {
@@ -99,7 +100,7 @@ async function connect(askForName = true) {
     state.nextDailyResetAt = profile.nextDailyResetAt;
     state.role = profile.role || "user";
     state.profile = personalization;
-    state.defaultModel = MODELS.find((model) => model.id === personalization.defaultModel)?.id || MODELS[0].id;
+    state.defaultModel = modelAvailable(personalization.defaultModel) ? personalization.defaultModel : "gemini-3.8-flash";
     localStorage.setItem("chat_default_model", state.defaultModel);
     state.chats = chats.chats;
     state.currentId = state.chats[0]?.id || null;
@@ -159,7 +160,7 @@ function renderQuota() {
   if (state.role === "admin" && state.token) $("adminLink").href = `./admin.html#invite=${encodeURIComponent(state.token)}`;
 }
 function renderModels() {
-  $("selectedModelName").textContent = state.connected ? selectedModel().name : "Войти для выбора модели";
+  $("selectedModelName").textContent = state.connected ? `${selectedModel().name}${selectedModel().disabled ? " · технические работы" : ""}` : "Войти для выбора модели";
   const menu = $("modelMenu");
   menu.replaceChildren();
   if (!state.connected) { menu.classList.add("hidden"); $("modelTrigger").setAttribute("aria-expanded", "false"); return; }
@@ -172,6 +173,7 @@ function renderModels() {
       const option = document.createElement("button");
       option.type = "button";
       option.className = `model-option ${model.id === state.model ? "selected" : ""}`;
+      option.disabled = !!model.disabled;
       option.setAttribute("role", "option");
       option.setAttribute("aria-selected", String(model.id === state.model));
       option.innerHTML = `<span class="model-option-icon ${provider === "Google" ? "gemini" : ""}">${provider === "Google" ? "✦" : "◎"}</span><span class="model-option-copy"><strong></strong><small></small></span>${model.id === state.model ? '<svg class="check"><use href="#i-check"/></svg>' : ""}`;
@@ -185,11 +187,7 @@ function renderModels() {
         state.model = model.id;
         menu.classList.add("hidden");
         $("modelTrigger").setAttribute("aria-expanded", "false");
-        renderModels();
-        renderThinking();
-        renderWebSearch();
-        renderList();
-        renderMessages();
+        renderAll();
       });
       menu.append(option);
     }
@@ -201,11 +199,11 @@ function renderThinking() {
   select.replaceChildren();
   for (const [value, label] of choices) { const option = document.createElement("option"); option.value = value; option.textContent = label; select.append(option); }
   select.value = selectedThinking();
-  select.disabled = !MODELS.some((model) => model.id === state.model);
+  select.disabled = !modelAvailable(state.model);
 }
 function renderWebSearch() {
   const button = $("webSearchToggle");
-  const available = state.connected && state.model === "gpt-6-luna";
+  const available = state.connected && state.model === "gpt-6-luna" && modelAvailable(state.model);
   button.disabled = !available;
   button.setAttribute("aria-pressed", String(available && state.webSearch));
   button.title = !state.connected ? "Войдите по личной ссылке" : available ? (state.webSearch ? "Выключить поиск в интернете" : "Включить поиск в интернете") : "Поиск пока недоступен для этой модели";
@@ -355,7 +353,11 @@ function renderAttachments() {
 function renderAll() { renderModels(); renderThinking(); renderWebSearch(); renderList(); renderMessages(); renderQuota(); renderAttachments(); updateSend(); renderVoice(); }
 function updateSend() {
   const ready = !!$("promptInput").value.trim() || state.files.length > 0;
-  $("sendButton").classList.toggle("ready", ready || state.busy);
+  const maintenance = selectedModel().disabled === true;
+  $("sendButton").disabled = maintenance;
+  $("promptInput").disabled = maintenance;
+  $("attachButton").disabled = maintenance;
+  $("sendButton").classList.toggle("ready", !maintenance && (ready || state.busy));
   $("sendButton").setAttribute("aria-label", state.busy ? "Ожидание ответа" : "Отправить сообщение");
   $("sendButton").innerHTML = state.busy ? '<svg><use href="#i-stop"/></svg>' : '<svg><use href="#i-arrow"/></svg>';
 }
@@ -366,16 +368,17 @@ function renderVoice() {
   const button = $("voiceButton");
   const recording = voiceRecorder?.state === "recording";
   button.classList.toggle("recording", recording);
-  button.disabled = voiceProcessing || (state.busy && !recording);
+  button.disabled = selectedModel().disabled === true || voiceProcessing || (state.busy && !recording);
   button.setAttribute("aria-label", recording ? "Остановить запись" : voiceProcessing ? "Распознаём речь" : "Говорить");
   button.title = button.getAttribute("aria-label");
   button.innerHTML = recording ? '<svg><use href="#i-stop"/></svg>' : '<svg><use href="#i-mic"/></svg>';
-  $("promptInput").placeholder = recording ? "Говорите… Нажмите на микрофон, чтобы отправить" : voiceProcessing ? "Распознаём речь…" : "Спросите что-нибудь";
+  $("promptInput").placeholder = selectedModel().disabled ? "GPT-6 Luna: технические работы" : recording ? "Говорите… Нажмите на микрофон, чтобы отправить" : voiceProcessing ? "Распознаём речь…" : "Спросите что-нибудь";
 }
 async function toggleVoice() {
   if (voiceRecorder?.state === "recording") { voiceRecorder.stop(); return; }
   if (voiceProcessing || state.busy) return;
   if (!state.connected) { showToast("Для голосового ввода нужна личная ссылка доступа."); openSettings(); return; }
+  if (selectedModel().disabled) { showToast("GPT-6 Luna: технические работы."); return; }
   if (state.remaining <= 0) { showToast("Дневной лимит исчерпан. Попробуйте завтра."); return; }
   if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) { showToast("Этот браузер не поддерживает запись с микрофона."); return; }
   let stream;
@@ -455,6 +458,7 @@ function readFile(file) {
 async function sendMessage() {
   if (state.busy || voiceRecorder?.state === "recording" || voiceProcessing) return;
   if (!state.connected) { showToast("Для чата нужна личная ссылка доступа."); openSettings(); return; }
+  if (selectedModel().disabled) { showToast("GPT-6 Luna: технические работы."); return; }
   if (currentChat() && !MODELS.some((model) => model.id === currentChat().model)) { showToast("Модель этого чата удалена. Начните новый чат."); return; }
   const content = $("promptInput").value.trim();
   const attached = [...state.files];
@@ -521,7 +525,7 @@ function renderSearch() {
   results.replaceChildren();
   const chats = state.chats.filter((chat) => !query || chat.title.toLocaleLowerCase().includes(query) || chat.messages.some((message) => message.content.toLocaleLowerCase().includes(query)));
   if (!chats.length) { const empty = document.createElement("div"); empty.className = "search-empty"; empty.textContent = "Ничего не найдено"; results.append(empty); return; }
-  chats.forEach((chat) => { const result = document.createElement("button"); result.className = "search-result"; result.textContent = chat.title; result.addEventListener("click", () => { state.currentId = chat.id; $("searchDialog").close(); renderAll(); closeMobile(); }); results.append(result); });
+  chats.forEach((chat) => { const result = document.createElement("button"); result.className = "search-result"; result.textContent = chat.title; result.addEventListener("click", () => { state.currentId = chat.id; state.model = chat.model; $("searchDialog").close(); renderAll(); closeMobile(); }); results.append(result); });
 }
 
 tokenFromUrl();

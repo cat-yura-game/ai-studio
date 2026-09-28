@@ -3,6 +3,8 @@ const MAX_FILE_BYTES = 5 * 1024 * 1024;
 const MAX_VOICE_BYTES = 3 * 1024 * 1024;
 const MOSCOW_DATE = new Intl.DateTimeFormat("en-US", { timeZone: "Europe/Moscow", year: "numeric", month: "2-digit", day: "2-digit" });
 const ALLOWED_MODELS = new Set(["gpt-6-luna", "gemini-3.8-flash"]);
+const DEFAULT_MODEL = "gemini-3.8-flash";
+function modelEnabled(env, model) { return ALLOWED_MODELS.has(model) && (model !== "gpt-6-luna" || env.LUNA_ENABLED === "true"); }
 const THINKING = { "gpt-6-luna": new Set(["none", "low", "medium", "high", "xhigh", "max"]), "gemini-3.8-flash": new Set(["low", "medium", "high"]) };
 const MODEL_NAMES = { "gpt-6-luna": "GPT-6 Luna", "gemini-3.8-flash": "Gemini 3.8 Flash", "gpt-6-astra": "GPT-6 Astra", "claude-opus-5": "Claude Opus 5" };
 const OPENAI_FILE_EXTENSIONS = new Set(["pdf", "txt", "md", "json", "csv", "html", "xml", "js", "ts", "py", "css", "doc", "docx", "rtf", "odt", "ppt", "pptx", "xls", "xlsx"]);
@@ -260,7 +262,7 @@ async function handleApi(request, env) {
     return json({ limit: settings.daily_limit, used, remaining: Math.max(0, settings.daily_limit - used), nextDailyResetAt: nextDailyResetAt(), resetBalance: updated.reset_balance, resetCap: settings.reset_cap, resetIntervalDays: settings.reset_interval_days, resetGrantAmount: settings.reset_grant_amount, nextResetAt: nextGrantAt(updated, settings), role: user.role });
   }
   if (request.method === "GET" && path === "/api/profile") {
-    const defaultModel = ALLOWED_MODELS.has(user.default_model) ? user.default_model : "gpt-6-luna";
+    const defaultModel = modelEnabled(env, user.default_model) ? user.default_model : DEFAULT_MODEL;
     if (defaultModel !== user.default_model) await env.DB.prepare("UPDATE users SET default_model = ? WHERE id = ? AND default_model = ?").bind(defaultModel, user.id, user.default_model).run();
     return json({ displayName: user.display_name, aboutText: user.about_text, defaultModel, memoryEnabled: !!user.memory_enabled });
   }
@@ -268,7 +270,7 @@ async function handleApi(request, env) {
     const body = await request.json();
     const displayName = String(body.displayName || "").trim().slice(0, 80);
     const aboutText = String(body.aboutText || "").trim().slice(0, 1000);
-    const defaultModel = ALLOWED_MODELS.has(body.defaultModel) ? body.defaultModel : ALLOWED_MODELS.has(user.default_model) ? user.default_model : "gpt-6-luna";
+    const defaultModel = modelEnabled(env, body.defaultModel) ? body.defaultModel : modelEnabled(env, user.default_model) ? user.default_model : DEFAULT_MODEL;
     await env.DB.prepare("UPDATE users SET display_name = ?, about_text = ?, default_model = ?, memory_enabled = ? WHERE id = ?").bind(displayName, aboutText, defaultModel, body.memoryEnabled ? 1 : 0, user.id).run();
     return json({ displayName, aboutText, defaultModel, memoryEnabled: !!body.memoryEnabled });
   }
@@ -290,7 +292,7 @@ async function handleApi(request, env) {
       const token = btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
       const id = crypto.randomUUID();
       const now = Date.now();
-      await env.DB.prepare("INSERT INTO users (id, token_hash, role, reset_last_grant_at, created_at) VALUES (?, ?, 'user', ?, ?)").bind(id, await hashToken(token), now, now).run();
+      await env.DB.prepare("INSERT INTO users (id, token_hash, role, default_model, reset_last_grant_at, created_at) VALUES (?, ?, 'user', ?, ?, ?)").bind(id, await hashToken(token), DEFAULT_MODEL, now, now).run();
       return json({ id, token });
     }
     if (request.method === "GET" && path === "/api/admin/settings") return json({ settings });
@@ -370,6 +372,7 @@ async function handleApi(request, env) {
     const files = body.files || [];
     const temporary = body.temporary === true;
     if (!ALLOWED_MODELS.has(model)) return safeError("Неизвестная модель.");
+    if (!modelEnabled(env, model)) return safeError("GPT-6 Luna: технические работы.", 503);
     if (!THINKING[model].has(thinking)) return safeError("Этот уровень размышления модель не поддерживает.");
     if (webSearch && model !== "gpt-6-luna") return safeError("Поиск пока доступен только для GPT-6 Luna.");
     if (content.length > 12_000 || (!content && !files.length)) return safeError("Напишите сообщение или прикрепите файл.");

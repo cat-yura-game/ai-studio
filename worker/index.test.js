@@ -45,7 +45,7 @@ function makeRequest(path, token, method = "GET", body = null, extraHeaders = {}
 
 const TOKEN_A = "a".repeat(43);
 const TOKEN_B = "b".repeat(43);
-const env = (db) => ({ DB: db, ALLOWED_ORIGIN: "https://site.example.test", OPENAI_API_KEY: "test-openai", GEMINI_API_KEY: "test-gemini" });
+const env = (db) => ({ DB: db, ALLOWED_ORIGIN: "https://site.example.test", OPENAI_API_KEY: "test-openai", GEMINI_API_KEY: "test-gemini", LUNA_ENABLED: "true" });
 
 test("daily quota rolls over at midnight in Moscow", () => {
   const before = Date.parse("2026-09-26T20:59:59Z");
@@ -251,10 +251,29 @@ test("removed models cannot spend a request or become the default", async () => 
   assert.equal(db.sqlite.prepare("SELECT COUNT(*) AS total FROM usage").get().total, 0);
   db.sqlite.prepare("UPDATE users SET default_model = 'claude-opus-5' WHERE id = 'user-a'").run();
   const oldProfile = await worker.fetch(makeRequest("/api/profile", TOKEN_A), env(db));
-  assert.equal((await oldProfile.json()).defaultModel, "gpt-6-luna");
-  assert.equal(db.sqlite.prepare("SELECT default_model FROM users WHERE id = 'user-a'").get().default_model, "gpt-6-luna");
+  assert.equal((await oldProfile.json()).defaultModel, "gemini-3.8-flash");
+  assert.equal(db.sqlite.prepare("SELECT default_model FROM users WHERE id = 'user-a'").get().default_model, "gemini-3.8-flash");
   const profile = await worker.fetch(makeRequest("/api/profile", TOKEN_A, "PUT", { displayName: "", aboutText: "", defaultModel: "gpt-6-astra", memoryEnabled: true }), env(db));
-  assert.equal((await profile.json()).defaultModel, "gpt-6-luna");
+  assert.equal((await profile.json()).defaultModel, "gemini-3.8-flash");
+  db.sqlite.close();
+});
+
+test("Luna maintenance preserves old chats and does not spend quota", async () => {
+  const db = database();
+  setupUser(db, "user-a", TOKEN_A);
+  db.sqlite.prepare("INSERT INTO chats (id, user_id, title, model, messages_json, updated_at) VALUES (?, ?, ?, ?, ?, ?)").run("old-luna", "user-a", "Старый чат", "gpt-6-luna", JSON.stringify([{ role: "user", content: "Привет" }]), Date.now());
+  const maintenanceEnv = { ...env(db), LUNA_ENABLED: "false" };
+  const profile = await (await worker.fetch(makeRequest("/api/profile", TOKEN_A), maintenanceEnv)).json();
+  assert.equal(profile.defaultModel, "gemini-3.8-flash");
+  assert.equal(db.sqlite.prepare("SELECT default_model FROM users WHERE id = 'user-a'").get().default_model, "gemini-3.8-flash");
+  const chats = await (await worker.fetch(makeRequest("/api/chats", TOKEN_A), maintenanceEnv)).json();
+  assert.equal(chats.chats[0].model, "gpt-6-luna");
+  const blocked = await worker.fetch(makeRequest("/api/chat", TOKEN_A, "POST", { chatId: "old-luna", model: "gpt-6-luna", thinking: "medium", content: "Продолжи", files: [] }), maintenanceEnv);
+  assert.equal(blocked.status, 503);
+  assert.match((await blocked.json()).error, /технические работы/);
+  assert.equal(db.sqlite.prepare("SELECT COUNT(*) AS total FROM usage").get().total, 0);
+  const updated = await (await worker.fetch(makeRequest("/api/profile", TOKEN_A, "PUT", { defaultModel: "gpt-6-luna" }), maintenanceEnv)).json();
+  assert.equal(updated.defaultModel, "gemini-3.8-flash");
   db.sqlite.close();
 });
 

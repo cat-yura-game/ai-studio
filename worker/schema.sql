@@ -4,7 +4,7 @@ CREATE TABLE IF NOT EXISTS users (
   role TEXT NOT NULL DEFAULT 'user',
   display_name TEXT NOT NULL DEFAULT '',
   about_text TEXT NOT NULL DEFAULT '',
-  default_model TEXT NOT NULL DEFAULT 'gpt-6-luna',
+  default_model TEXT NOT NULL DEFAULT 'gemini-3.8-flash',
   memory_enabled INTEGER NOT NULL DEFAULT 1,
   reset_balance INTEGER NOT NULL DEFAULT 1,
   reset_last_grant_at INTEGER NOT NULL,
