@@ -1,7 +1,8 @@
 import { renderMarkdown } from "./markdown.js";
 
 const MODELS = [
-  { id: "gpt-6-luna", name: "GPT-6 Luna", provider: "OpenAI", description: "Технические работы", disabled: true },
+  { id: "gpt-6-luna", name: "GPT-6 Luna", provider: "OpenAI", description: "Быстрые ответы" },
+  { id: "gpt-6-sol", name: "GPT-6 Sol", provider: "OpenAI", description: "Задачи и работа с кодом" },
   { id: "gpt-6-astra", name: "GPT-6 Astra", provider: "OpenAI", description: "Сложные задачи и рассуждения" },
   { id: "gemini-3.8-flash", name: "Gemini 3.8 Flash", provider: "Google", description: "Быстрые ответы" },
   { id: "nemotron-3-ultra", name: "Nemotron 3 Ultra", provider: "NVIDIA", description: "Сложные задачи и рассуждения" },

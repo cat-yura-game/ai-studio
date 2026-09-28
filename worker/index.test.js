@@ -45,7 +45,7 @@ function makeRequest(path, token, method = "GET", body = null, extraHeaders = {}
 
 const TOKEN_A = "a".repeat(43);
 const TOKEN_B = "b".repeat(43);
-const env = (db) => ({ DB: db, ALLOWED_ORIGIN: "https://site.example.test", OPENAI_API_KEY: "test-openai", ROUTER_CHEAP_API_KEY: "test-router-cheap", GEMINI_API_KEY: "test-gemini", OPENROUTER_API_KEY: "test-openrouter", LUNA_ENABLED: "true" });
+const env = (db) => ({ DB: db, ALLOWED_ORIGIN: "https://site.example.test", ROUTER_CHEAP_API_KEY: "test-router-cheap", GEMINI_API_KEY: "test-gemini", OPENROUTER_API_KEY: "test-openrouter" });
 
 test("GPT-6 Astra uses router.cheap and can be selected as default", async (context) => {
   const db = database();
@@ -67,6 +67,27 @@ test("GPT-6 Astra uses router.cheap and can be selected as default", async (cont
   assert.equal(request.authorization, "Bearer test-router-cheap");
   assert.equal(request.body.model, "gpt-6-astra");
   assert.deepEqual(request.body.reasoning, { effort: "low" });
+});
+
+test("Luna and Sol use router.cheap and are available for new chats", async (context) => {
+  const db = database();
+  setupUser(db, "gpt-user", TOKEN_A);
+  const originalFetch = globalThis.fetch;
+  const requests = [];
+  globalThis.fetch = async (url, options) => {
+    requests.push({ url: String(url), authorization: options.headers.Authorization, body: JSON.parse(options.body) });
+    return Response.json({ output: [{ content: [{ type: "output_text", text: "Ответ GPT" }] }] });
+  };
+  context.after(() => { globalThis.fetch = originalFetch; db.sqlite.close(); });
+  for (const model of ["gpt-6-luna", "gpt-6-sol"]) {
+    const profile = await worker.fetch(makeRequest("/api/profile", TOKEN_A, "PUT", { defaultModel: model }), env(db));
+    assert.equal((await profile.json()).defaultModel, model);
+    const chat = await worker.fetch(makeRequest("/api/chat", TOKEN_A, "POST", { temporary: true, model, thinking: "low", content: "Привет", files: [] }), env(db));
+    assert.equal(chat.status, 200);
+    assert.equal((await chat.json()).answer, "Ответ GPT");
+  }
+  assert.deepEqual(requests.map((request) => request.body.model), ["gpt-6-luna", "gpt-6-sol"]);
+  assert.ok(requests.every((request) => request.url === "https://router.cheap/v1/responses" && request.authorization === "Bearer test-router-cheap"));
 });
 
 test("OpenRouter models use their own IDs, thinking levels, and supported attachments", async (context) => {
@@ -370,23 +391,20 @@ test("removed Claude model cannot spend a request or become the default", async 
   db.sqlite.close();
 });
 
-test("Luna maintenance preserves old chats and does not spend quota", async () => {
+test("restored Luna can continue old chats", async (context) => {
   const db = database();
   setupUser(db, "user-a", TOKEN_A);
   db.sqlite.prepare("INSERT INTO chats (id, user_id, title, model, messages_json, updated_at) VALUES (?, ?, ?, ?, ?, ?)").run("old-luna", "user-a", "Старый чат", "gpt-6-luna", JSON.stringify([{ role: "user", content: "Привет" }]), Date.now());
-  const maintenanceEnv = { ...env(db), LUNA_ENABLED: "false" };
-  const profile = await (await worker.fetch(makeRequest("/api/profile", TOKEN_A), maintenanceEnv)).json();
-  assert.equal(profile.defaultModel, "gemini-3.8-flash");
-  assert.equal(db.sqlite.prepare("SELECT default_model FROM users WHERE id = 'user-a'").get().default_model, "gemini-3.8-flash");
-  const chats = await (await worker.fetch(makeRequest("/api/chats", TOKEN_A), maintenanceEnv)).json();
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => Response.json({ output: [{ content: [{ type: "output_text", text: "Продолжение" }] }] });
+  context.after(() => { globalThis.fetch = originalFetch; db.sqlite.close(); });
+  const profile = await (await worker.fetch(makeRequest("/api/profile", TOKEN_A), env(db))).json();
+  assert.equal(profile.defaultModel, "gpt-6-luna");
+  const chats = await (await worker.fetch(makeRequest("/api/chats", TOKEN_A), env(db))).json();
   assert.equal(chats.chats[0].model, "gpt-6-luna");
-  const blocked = await worker.fetch(makeRequest("/api/chat", TOKEN_A, "POST", { chatId: "old-luna", model: "gpt-6-luna", thinking: "medium", content: "Продолжи", files: [] }), maintenanceEnv);
-  assert.equal(blocked.status, 503);
-  assert.match((await blocked.json()).error, /технические работы/);
-  assert.equal(db.sqlite.prepare("SELECT COUNT(*) AS total FROM usage").get().total, 0);
-  const updated = await (await worker.fetch(makeRequest("/api/profile", TOKEN_A, "PUT", { defaultModel: "gpt-6-luna" }), maintenanceEnv)).json();
-  assert.equal(updated.defaultModel, "gemini-3.8-flash");
-  db.sqlite.close();
+  const continued = await worker.fetch(makeRequest("/api/chat", TOKEN_A, "POST", { chatId: "old-luna", model: "gpt-6-luna", thinking: "medium", content: "Продолжи", files: [] }), env(db));
+  assert.equal(continued.status, 200);
+  assert.equal((await continued.json()).answer, "Продолжение");
 });
 
 test("web search is opt-in for Luna and preserves clickable citation data", async (context) => {
