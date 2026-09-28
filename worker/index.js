@@ -3,10 +3,10 @@ const MAX_FILE_BYTES = 5 * 1024 * 1024;
 const MAX_VOICE_BYTES = 3 * 1024 * 1024;
 const MOSCOW_DATE = new Intl.DateTimeFormat("en-US", { timeZone: "Europe/Moscow", year: "numeric", month: "2-digit", day: "2-digit" });
 const OPENROUTER_MODELS = { "nemotron-3-ultra": "nvidia/nemotron-3-ultra-550b-a55b:free", "qwen3.8-27b": "qwen/qwen3.8-27b:free" };
-const ALLOWED_MODELS = new Set(["gpt-6-luna", "gemini-3.8-flash", ...Object.keys(OPENROUTER_MODELS)]);
+const ALLOWED_MODELS = new Set(["gpt-6-luna", "gpt-6-astra", "gemini-3.8-flash", ...Object.keys(OPENROUTER_MODELS)]);
 const DEFAULT_MODEL = "gemini-3.8-flash";
 function modelEnabled(env, model) { return ALLOWED_MODELS.has(model) && (model !== "gpt-6-luna" || env.LUNA_ENABLED === "true"); }
-const THINKING = { "gpt-6-luna": new Set(["none", "low", "medium", "high", "xhigh", "max"]), "gemini-3.8-flash": new Set(["low", "medium", "high"]), "nemotron-3-ultra": new Set(["low", "medium", "high"]), "qwen3.8-27b": new Set(["none", "low", "medium", "high"]) };
+const THINKING = { "gpt-6-luna": new Set(["none", "low", "medium", "high", "xhigh", "max"]), "gpt-6-astra": new Set(["low", "medium", "high"]), "gemini-3.8-flash": new Set(["low", "medium", "high"]), "nemotron-3-ultra": new Set(["low", "medium", "high"]), "qwen3.8-27b": new Set(["none", "low", "medium", "high"]) };
 const MODEL_NAMES = { "gpt-6-luna": "GPT-6 Luna", "gemini-3.8-flash": "Gemini 3.8 Flash", "nemotron-3-ultra": "Nemotron 3 Ultra", "qwen3.8-27b": "Qwen3.8 27B", "gpt-6-astra": "GPT-6 Astra", "claude-opus-5": "Claude Opus 5" };
 const OPENAI_FILE_EXTENSIONS = new Set(["pdf", "txt", "md", "json", "csv", "html", "xml", "js", "ts", "py", "css", "doc", "docx", "rtf", "odt", "ppt", "pptx", "xls", "xlsx"]);
 const GEMINI_MEDIA_TYPES = new Set(["application/pdf", "image/png", "image/jpeg", "image/webp", "image/heic", "image/heif", "audio/mpeg", "audio/mp3", "audio/wav", "audio/x-wav", "audio/mp4", "audio/ogg", "audio/flac", "video/mp4", "video/webm", "video/quicktime"]);
@@ -60,7 +60,7 @@ function validateFiles(files, model) {
   for (const file of files) {
     if (!file || typeof file.name !== "string" || typeof file.data !== "string" || typeof file.type !== "string" || !Number.isInteger(file.size) || file.size < 0 || file.size > MAX_FILE_BYTES || file.data.length > Math.ceil(MAX_FILE_BYTES * 4 / 3) + 8) throw new Error("Файл повреждён или превышает 5 МБ.");
     const ext = file.name.split(".").pop().toLowerCase();
-    if (model === "gpt-6-luna" && !file.type.startsWith("image/") && !OPENAI_FILE_EXTENSIONS.has(ext)) throw new Error(`GPT-6 Luna не поддерживает файл «${file.name}».`);
+    if (["gpt-6-luna", "gpt-6-astra"].includes(model) && !file.type.startsWith("image/") && !OPENAI_FILE_EXTENSIONS.has(ext)) throw new Error(`${MODEL_NAMES[model]} не поддерживает файл «${file.name}».`);
     if (model === "gemini-3.8-flash" && !GEMINI_MEDIA_TYPES.has(file.type) && !isTextFile(file)) throw new Error(`Gemini 3.8 Flash не поддерживает файл «${file.name}».`);
     if (model === "nemotron-3-ultra" && !isTextFile(file)) throw new Error(`Nemotron 3 Ultra поддерживает только текстовые файлы: «${file.name}».`);
     if (model === "qwen3.8-27b" && !isTextFile(file) && !["image/png", "image/jpeg", "image/webp"].includes(file.type)) throw new Error(`Qwen3.8 27B поддерживает текстовые файлы и изображения PNG, JPEG, WebP: «${file.name}».`);
@@ -186,15 +186,17 @@ function openAiInput(history, message, files) {
   }
   return [...prior, { role: "user", content }];
 }
-async function callOpenAI(env, history, message, files, thinking, instructions, webSearch) {
-  if (!env.OPENAI_API_KEY) throw new Error("Ключ OpenAI ещё не добавлен в Worker.");
-  const response = await fetch("https://api.openai.com/v1/responses", {
+async function callOpenAI(env, model, history, message, files, thinking, instructions, webSearch) {
+  const routerCheap = model === "gpt-6-astra";
+  const key = routerCheap ? env.ROUTER_CHEAP_API_KEY : env.OPENAI_API_KEY;
+  if (!key) throw new Error(routerCheap ? "Ключ GPT-6 Astra ещё не добавлен в Worker." : "Ключ OpenAI ещё не добавлен в Worker.");
+  const response = await fetch(routerCheap ? "https://router.cheap/v1/responses" : "https://api.openai.com/v1/responses", {
     method: "POST",
-    headers: { Authorization: `Bearer ${env.OPENAI_API_KEY}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ model: "gpt-6-luna", instructions, input: openAiInput(history, message, files), reasoning: { effort: thinking }, max_output_tokens: 8192, store: false, ...(webSearch ? { tools: [{ type: "web_search" }], tool_choice: "required" } : {}) }),
+    headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ model, instructions, input: openAiInput(history, message, files), reasoning: { effort: thinking }, max_output_tokens: 8192, store: false, ...(webSearch ? { tools: [{ type: "web_search" }], tool_choice: "required" } : {}) }),
   });
   const data = await response.json();
-  if (!response.ok) throw new Error(data.error?.message || "OpenAI временно недоступен.");
+  if (!response.ok) throw new Error(data.error?.message || (routerCheap ? "GPT-6 Astra временно недоступна." : "OpenAI временно недоступен."));
   const parts = (data.output || []).flatMap((item) => item.content || []).filter((item) => item.type === "output_text");
   let answer = "";
   const citations = [];
@@ -417,8 +419,8 @@ async function handleApi(request, env) {
       const memory = !temporary && user.memory_enabled ? await memoryFor(env.DB, user.id, chatId, content) : "";
       const instructions = instructionsFor(user, memory);
       const modelFiles = files.length || temporary ? files : await priorFilesForContext(env, user.id, fullHistory, content);
-      const { answer, citations } = model === "gpt-6-luna"
-        ? await callOpenAI(env, history, content, modelFiles, thinking, instructions, webSearch)
+      const { answer, citations } = ["gpt-6-luna", "gpt-6-astra"].includes(model)
+        ? await callOpenAI(env, model, history, content, modelFiles, thinking, instructions, webSearch)
         : { answer: model === "gemini-3.8-flash" ? await callGemini(env, history, content, modelFiles, thinking, instructions) : await callOpenRouter(env, model, history, content, modelFiles, thinking, instructions), citations: [] };
       const publicFiles = stored.map(({ id, name, type, size }) => ({ id, name, type, size }));
       if (temporary) return json({ chatId: "temporary", answer, citations, remaining: Math.max(0, settings.daily_limit - count) });

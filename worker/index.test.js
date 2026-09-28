@@ -45,7 +45,29 @@ function makeRequest(path, token, method = "GET", body = null, extraHeaders = {}
 
 const TOKEN_A = "a".repeat(43);
 const TOKEN_B = "b".repeat(43);
-const env = (db) => ({ DB: db, ALLOWED_ORIGIN: "https://site.example.test", OPENAI_API_KEY: "test-openai", GEMINI_API_KEY: "test-gemini", OPENROUTER_API_KEY: "test-openrouter", LUNA_ENABLED: "true" });
+const env = (db) => ({ DB: db, ALLOWED_ORIGIN: "https://site.example.test", OPENAI_API_KEY: "test-openai", ROUTER_CHEAP_API_KEY: "test-router-cheap", GEMINI_API_KEY: "test-gemini", OPENROUTER_API_KEY: "test-openrouter", LUNA_ENABLED: "true" });
+
+test("GPT-6 Astra uses router.cheap and can be selected as default", async (context) => {
+  const db = database();
+  setupUser(db, "astra-user", TOKEN_A);
+  const originalFetch = globalThis.fetch;
+  let request;
+  globalThis.fetch = async (url, options) => {
+    request = { url: String(url), authorization: options.headers.Authorization, body: JSON.parse(options.body) };
+    return Response.json({ output: [{ content: [{ type: "output_text", text: "Привет от Astra" }] }] });
+  };
+  context.after(() => { globalThis.fetch = originalFetch; db.sqlite.close(); });
+  const environment = env(db);
+  const profile = await worker.fetch(makeRequest("/api/profile", TOKEN_A, "PUT", { defaultModel: "gpt-6-astra" }), environment);
+  assert.equal((await profile.json()).defaultModel, "gpt-6-astra");
+  const chat = await worker.fetch(makeRequest("/api/chat", TOKEN_A, "POST", { temporary: true, model: "gpt-6-astra", thinking: "low", content: "Привет", files: [] }), environment);
+  assert.equal(chat.status, 200);
+  assert.equal((await chat.json()).answer, "Привет от Astra");
+  assert.equal(request.url, "https://router.cheap/v1/responses");
+  assert.equal(request.authorization, "Bearer test-router-cheap");
+  assert.equal(request.body.model, "gpt-6-astra");
+  assert.deepEqual(request.body.reasoning, { effort: "low" });
+});
 
 test("OpenRouter models use their own IDs, thinking levels, and supported attachments", async (context) => {
   const db = database();
@@ -330,10 +352,10 @@ test("attachments persist for their owner and are removed with the chat", async 
   assert.equal(objects.size, 0);
 });
 
-test("removed models cannot spend a request or become the default", async () => {
+test("removed Claude model cannot spend a request or become the default", async () => {
   const db = database();
   setupUser(db, "user-a", TOKEN_A);
-  for (const model of ["gpt-6-astra", "claude-opus-5"]) {
+  for (const model of ["claude-opus-5"]) {
     const response = await worker.fetch(makeRequest("/api/chat", TOKEN_A, "POST", { model, thinking: "low", content: "Привет", files: [] }), env(db));
     assert.equal(response.status, 400);
     assert.equal((await response.json()).error, "Неизвестная модель.");
@@ -343,7 +365,7 @@ test("removed models cannot spend a request or become the default", async () => 
   const oldProfile = await worker.fetch(makeRequest("/api/profile", TOKEN_A), env(db));
   assert.equal((await oldProfile.json()).defaultModel, "gemini-3.8-flash");
   assert.equal(db.sqlite.prepare("SELECT default_model FROM users WHERE id = 'user-a'").get().default_model, "gemini-3.8-flash");
-  const profile = await worker.fetch(makeRequest("/api/profile", TOKEN_A, "PUT", { displayName: "", aboutText: "", defaultModel: "gpt-6-astra", memoryEnabled: true }), env(db));
+  const profile = await worker.fetch(makeRequest("/api/profile", TOKEN_A, "PUT", { displayName: "", aboutText: "", defaultModel: "claude-opus-5", memoryEnabled: true }), env(db));
   assert.equal((await profile.json()).defaultModel, "gemini-3.8-flash");
   db.sqlite.close();
 });
