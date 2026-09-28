@@ -233,6 +233,26 @@ test("admin can change reset policy and create personal links", async (context) 
   assert.equal((await worker.fetch(makeRequest("/api/me", created.token), env(db))).status, 200);
 });
 
+test("admin grants one reset to every user up to the shared cap", async () => {
+  const db = database();
+  setupUser(db, "admin", TOKEN_A);
+  setupUser(db, "user-b", TOKEN_B);
+  setupUser(db, "user-c", "c".repeat(43));
+  db.sqlite.exec("UPDATE users SET role = 'admin', reset_balance = 2 WHERE id = 'admin'; UPDATE users SET reset_balance = 3 WHERE id = 'user-b'; UPDATE users SET reset_balance = 0 WHERE id = 'user-c'");
+  const password = "test-admin-password";
+  const environment = { ...env(db), ADMIN_PASSWORD_HASH: createHash("sha256").update(password).digest("hex") };
+  const path = "/api/admin/grant-all";
+  assert.equal((await worker.fetch(makeRequest(path, TOKEN_B, "POST", {}), environment)).status, 403);
+  assert.equal((await worker.fetch(makeRequest(path, TOKEN_A, "POST", {}), environment)).status, 401);
+  const granted = await worker.fetch(makeRequest(path, TOKEN_A, "POST", {}, { "X-Admin-Password": password }), environment);
+  assert.equal(granted.status, 200);
+  assert.deepEqual(await granted.json(), { granted: 2, total: 3 });
+  const balances = db.sqlite.prepare("SELECT id, reset_balance FROM users ORDER BY id").all().map((row) => ({ ...row }));
+  assert.deepEqual(balances, [{ id: "admin", reset_balance: 3 }, { id: "user-b", reset_balance: 3 }, { id: "user-c", reset_balance: 1 }]);
+  assert.equal((await worker.fetch(makeRequest("/api/admin/users/user-c/grant", TOKEN_A, "POST", {}, { "X-Admin-Password": password }), environment)).status, 404);
+  db.sqlite.close();
+});
+
 test("attachments persist for their owner and are removed with the chat", async (context) => {
   const db = database();
   setupUser(db, "user-a", TOKEN_A);

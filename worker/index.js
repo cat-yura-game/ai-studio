@@ -307,10 +307,10 @@ async function handleApi(request, env) {
       const { results } = await env.DB.prepare("SELECT id, role, display_name, reset_balance, created_at FROM users ORDER BY created_at DESC").all();
       return json({ users: results });
     }
-    const grant = /^\/api\/admin\/users\/([A-Za-z0-9-]{1,64})\/grant$/.exec(path);
-    if (request.method === "POST" && grant) {
-      const result = await env.DB.prepare("UPDATE users SET reset_balance = MIN(?, reset_balance + 1) WHERE id = ? RETURNING reset_balance").bind(settings.reset_cap, grant[1]).first();
-      return result ? json({ resetBalance: result.reset_balance }) : safeError("Пользователь не найден.", 404);
+    if (request.method === "POST" && path === "/api/admin/grant-all") {
+      const { results } = await env.DB.prepare("UPDATE users SET reset_balance = reset_balance + 1 WHERE reset_balance < ? RETURNING id").bind(settings.reset_cap).all();
+      const total = await env.DB.prepare("SELECT COUNT(*) AS count FROM users").first();
+      return json({ granted: results.length, total: Number(total.count) });
     }
   }
   if (request.method === "GET" && path === "/api/chats") {

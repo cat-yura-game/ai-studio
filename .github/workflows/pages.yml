@@ -38,6 +38,8 @@ jobs:
           page.write_text(page.read_text(encoding='utf-8').replace('./app.js"', './app.js?v=' + os.environ['GITHUB_SHA'] + '"').replace('./styles.css"', './styles.css?v=' + os.environ['GITHUB_SHA'] + '"'), encoding='utf-8')
           app = Path('_site/app.js')
           app.write_text(app.read_text(encoding='utf-8').replace('./markdown.js"', './markdown.js?v=' + os.environ['GITHUB_SHA'] + '"'), encoding='utf-8')
+          admin_page = Path('_site/admin.html')
+          admin_page.write_text(admin_page.read_text(encoding='utf-8').replace('./admin.js"', './admin.js?v=' + os.environ['GITHUB_SHA'] + '"').replace('./admin.css"', './admin.css?v=' + os.environ['GITHUB_SHA'] + '"'), encoding='utf-8')
           PY
       - uses: actions/upload-pages-artifact@v3
         with:

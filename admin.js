@@ -23,9 +23,7 @@ function renderUsers(users, cap) {
     identity.append(name, uid);
     const right = document.createElement("div"); right.className = "right";
     const balance = document.createElement("span"); balance.textContent = `Сбросы: ${user.reset_balance}/${cap}`;
-    const grant = document.createElement("button"); grant.type = "button"; grant.className = "outline-button"; grant.textContent = "+1 сброс"; grant.disabled = user.reset_balance >= cap;
-    grant.addEventListener("click", async () => { try { const result = await api(`/api/admin/users/${user.id}/grant`, { method: "POST", body: "{}" }); user.reset_balance = result.resetBalance; balance.textContent = `Сбросы: ${user.reset_balance}/${cap}`; grant.disabled = user.reset_balance >= cap; status("Сброс начислен."); } catch (error) { status(error.message); } });
-    right.append(balance, grant); row.append(identity, right); holder.append(row);
+    right.append(balance); row.append(identity, right); holder.append(row);
   }
 }
 async function load() {
@@ -66,6 +64,19 @@ $("policyForm").addEventListener("submit", async (event) => {
     status("Правила сохранены.");
     await load();
   } catch (error) { status(error.message); }
+});
+$("grantAll").addEventListener("click", async () => {
+  const cap = Number($("resetCap").value);
+  if (!confirm(`Начислить всем по одному сбросу? Пользователи с запасом ${cap}/${cap} останутся на максимуме.`)) return;
+  const button = $("grantAll");
+  button.disabled = true;
+  try {
+    const result = await api("/api/admin/grant-all", { method: "POST", body: "{}" });
+    const people = await api("/api/admin/users");
+    renderUsers(people.users, cap);
+    status(`+1 сброс начислен ${result.granted} из ${result.total} пользователей. Остальные уже достигли максимума.`);
+  } catch (error) { status(error.message); }
+  finally { button.disabled = false; }
 });
 $("createInvite").addEventListener("click", async () => {
   try {
