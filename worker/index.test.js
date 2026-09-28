@@ -87,6 +87,32 @@ test("voice transcription is capped separately and a spoken chat uses one daily 
   assert.equal((await (await worker.fetch(makeRequest("/api/me", TOKEN_A), env(db))).json()).remaining, 0);
 });
 
+test("Gemini chat and voice try backup keys before returning an error", async (context) => {
+  const db = database();
+  setupUser(db, "backup-user", TOKEN_A);
+  const keys = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (_url, options) => {
+    const key = options.headers["x-goog-api-key"];
+    keys.push(key);
+    const isVoice = JSON.parse(options.body).contents[0].parts.some((part) => part.inline_data);
+    if (key === "primary" || (isVoice && key === "backup-one")) return Response.json({ error: { message: "Unavailable" } }, { status: 429 });
+    return Response.json({ candidates: [{ content: { parts: [{ text: isVoice ? "Голосовой текст" : "Ответ Gemini" }] } }] });
+  };
+  context.after(() => { globalThis.fetch = originalFetch; db.sqlite.close(); });
+  const environment = { ...env(db), GEMINI_API_KEY: "primary", GEMINI_API_KEY_BACKUP_1: "backup-one", GEMINI_API_KEY_BACKUP_2: "backup-two", GEMINI_API_KEY_BACKUP_3: "backup-three" };
+  const chat = await worker.fetch(makeRequest("/api/chat", TOKEN_A, "POST", { temporary: true, model: "gemini-3.8-flash", thinking: "low", content: "Привет", files: [] }), environment);
+  assert.equal(chat.status, 200);
+  assert.equal((await chat.json()).answer, "Ответ Gemini");
+  const form = new FormData();
+  form.set("audio", new File([new Uint8Array(200)], "speech.webm", { type: "audio/webm" }));
+  const voice = await worker.fetch(new Request("https://api.example.test/api/transcribe", { method: "POST", headers: { Origin: "https://site.example.test", Authorization: `Bearer ${TOKEN_A}` }, body: form }), environment);
+  assert.equal(voice.status, 200);
+  assert.equal((await voice.json()).text, "Голосовой текст");
+  assert.deepEqual(keys, ["primary", "backup-one", "primary", "backup-one", "backup-two"]);
+  assert.equal((await (await worker.fetch(makeRequest("/api/me", TOKEN_A), environment)).json()).remaining, 29);
+});
+
 test("browser preflight allows saving profile settings", async () => {
   const response = await worker.fetch(new Request("https://api.example.test/api/profile", {
     method: "OPTIONS",

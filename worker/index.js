@@ -151,19 +151,28 @@ async function reserveRequest(db, userId, limit, day = dayKey()) {
 async function releaseRequest(db, userId, day) {
   await db.prepare("UPDATE usage SET count = MAX(0, count - 1) WHERE user_id = ? AND day = ?").bind(userId, day).run();
 }
+async function callGeminiWithFallback(env, payload, separator, emptyMessage) {
+  const keys = [...new Set([env.GEMINI_API_KEY, env.GEMINI_API_KEY_BACKUP_1, env.GEMINI_API_KEY_BACKUP_2, env.GEMINI_API_KEY_BACKUP_3].map((key) => String(key || "").trim()).filter(Boolean))];
+  if (!keys.length) throw new Error("Ключ Gemini ещё не добавлен в Worker.");
+  const body = JSON.stringify(payload);
+  for (const key of keys) {
+    try {
+      const response = await fetch("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent", {
+        method: "POST",
+        headers: { "x-goog-api-key": key, "Content-Type": "application/json" },
+        body,
+      });
+      const data = await response.json();
+      if (!response.ok) continue;
+      const text = (data.candidates?.[0]?.content?.parts || []).map((part) => part.text || "").join(separator).trim();
+      if (text) return text;
+    } catch { /* Try the next key on network and response errors. */ }
+  }
+  throw new Error(keys.length > 1 ? "Все ключи Gemini временно недоступны. Попробуйте позже." : emptyMessage);
+}
 async function transcribeAudio(env, audio) {
-  if (!env.GEMINI_API_KEY) throw new Error("Ключ Gemini ещё не добавлен в Worker.");
   const bytes = new Uint8Array(await audio.arrayBuffer());
-  const response = await fetch("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent", {
-    method: "POST",
-    headers: { "x-goog-api-key": env.GEMINI_API_KEY, "Content-Type": "application/json" },
-    body: JSON.stringify({ contents: [{ parts: [{ text: "Дословно расшифруй речь из аудио. Верни только произнесённый текст, без пояснений и Markdown." }, { inline_data: { mime_type: audio.type.split(";")[0], data: base64FromBytes(bytes) } }] }], generationConfig: { maxOutputTokens: 2048 } }),
-  });
-  const data = await response.json();
-  if (!response.ok) throw new Error(data.error?.message || "Gemini не смог распознать речь.");
-  const text = (data.candidates?.[0]?.content?.parts || []).map((part) => part.text || "").join(" ").trim().slice(0, 12_000);
-  if (!text) throw new Error("Речь не распознана.");
-  return text;
+  return (await callGeminiWithFallback(env, { contents: [{ parts: [{ text: "Дословно расшифруй речь из аудио. Верни только произнесённый текст, без пояснений и Markdown." }, { inline_data: { mime_type: audio.type.split(";")[0], data: base64FromBytes(bytes) } }] }], generationConfig: { maxOutputTokens: 2048 } }, " ", "Речь не распознана.")).slice(0, 12_000);
 }
 function openAiInput(history, message, files) {
   const prior = history.slice(-24).map((entry) => ({ role: entry.role, content: entry.content || "(вложение)" }));
@@ -210,19 +219,9 @@ function geminiParts(message, files) {
   return parts;
 }
 async function callGemini(env, history, message, files, thinking, instructions) {
-  if (!env.GEMINI_API_KEY) throw new Error("Ключ Gemini ещё не добавлен в Worker.");
   const contents = history.slice(-24).map((entry) => ({ role: entry.role === "assistant" ? "model" : "user", parts: [{ text: entry.content || "(вложение)" }] }));
   contents.push({ role: "user", parts: geminiParts(message, files) });
-  const response = await fetch("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent", {
-    method: "POST",
-    headers: { "x-goog-api-key": env.GEMINI_API_KEY, "Content-Type": "application/json" },
-    body: JSON.stringify({ contents, systemInstruction: { parts: [{ text: instructions }] }, generationConfig: { thinkingConfig: { thinkingLevel: thinking }, maxOutputTokens: 8192 } }),
-  });
-  const data = await response.json();
-  if (!response.ok) throw new Error(data.error?.message || "Gemini временно недоступен.");
-  const answer = (data.candidates?.[0]?.content?.parts || []).map((part) => part.text || "").join("\n").trim();
-  if (!answer) throw new Error("Модель не вернула текстовый ответ. Попробуйте ещё раз.");
-  return answer;
+  return callGeminiWithFallback(env, { contents, systemInstruction: { parts: [{ text: instructions }] }, generationConfig: { thinkingConfig: { thinkingLevel: thinking }, maxOutputTokens: 8192 } }, "\n", "Модель не вернула текстовый ответ. Попробуйте ещё раз.");
 }
 function rowToChat(row) {
   let messages;
