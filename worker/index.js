@@ -2,11 +2,12 @@ const DAY_MS = 86_400_000;
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
 const MAX_VOICE_BYTES = 3 * 1024 * 1024;
 const MOSCOW_DATE = new Intl.DateTimeFormat("en-US", { timeZone: "Europe/Moscow", year: "numeric", month: "2-digit", day: "2-digit" });
-const ALLOWED_MODELS = new Set(["gpt-6-luna", "gemini-3.8-flash"]);
+const OPENROUTER_MODELS = { "nemotron-3-ultra": "nvidia/nemotron-3-ultra-550b-a55b:free", "qwen3.8-27b": "qwen/qwen3.8-27b:free" };
+const ALLOWED_MODELS = new Set(["gpt-6-luna", "gemini-3.8-flash", ...Object.keys(OPENROUTER_MODELS)]);
 const DEFAULT_MODEL = "gemini-3.8-flash";
 function modelEnabled(env, model) { return ALLOWED_MODELS.has(model) && (model !== "gpt-6-luna" || env.LUNA_ENABLED === "true"); }
-const THINKING = { "gpt-6-luna": new Set(["none", "low", "medium", "high", "xhigh", "max"]), "gemini-3.8-flash": new Set(["low", "medium", "high"]) };
-const MODEL_NAMES = { "gpt-6-luna": "GPT-6 Luna", "gemini-3.8-flash": "Gemini 3.8 Flash", "gpt-6-astra": "GPT-6 Astra", "claude-opus-5": "Claude Opus 5" };
+const THINKING = { "gpt-6-luna": new Set(["none", "low", "medium", "high", "xhigh", "max"]), "gemini-3.8-flash": new Set(["low", "medium", "high"]), "nemotron-3-ultra": new Set(["low", "medium", "high"]), "qwen3.8-27b": new Set(["none", "low", "medium", "high"]) };
+const MODEL_NAMES = { "gpt-6-luna": "GPT-6 Luna", "gemini-3.8-flash": "Gemini 3.8 Flash", "nemotron-3-ultra": "Nemotron 3 Ultra", "qwen3.8-27b": "Qwen3.8 27B", "gpt-6-astra": "GPT-6 Astra", "claude-opus-5": "Claude Opus 5" };
 const OPENAI_FILE_EXTENSIONS = new Set(["pdf", "txt", "md", "json", "csv", "html", "xml", "js", "ts", "py", "css", "doc", "docx", "rtf", "odt", "ppt", "pptx", "xls", "xlsx"]);
 const GEMINI_MEDIA_TYPES = new Set(["application/pdf", "image/png", "image/jpeg", "image/webp", "image/heic", "image/heif", "audio/mpeg", "audio/mp3", "audio/wav", "audio/x-wav", "audio/mp4", "audio/ogg", "audio/flac", "video/mp4", "video/webm", "video/quicktime"]);
 
@@ -61,6 +62,8 @@ function validateFiles(files, model) {
     const ext = file.name.split(".").pop().toLowerCase();
     if (model === "gpt-6-luna" && !file.type.startsWith("image/") && !OPENAI_FILE_EXTENSIONS.has(ext)) throw new Error(`GPT-6 Luna не поддерживает файл «${file.name}».`);
     if (model === "gemini-3.8-flash" && !GEMINI_MEDIA_TYPES.has(file.type) && !isTextFile(file)) throw new Error(`Gemini 3.8 Flash не поддерживает файл «${file.name}».`);
+    if (model === "nemotron-3-ultra" && !isTextFile(file)) throw new Error(`Nemotron 3 Ultra поддерживает только текстовые файлы: «${file.name}».`);
+    if (model === "qwen3.8-27b" && !isTextFile(file) && !["image/png", "image/jpeg", "image/webp"].includes(file.type)) throw new Error(`Qwen3.8 27B поддерживает текстовые файлы и изображения PNG, JPEG, WebP: «${file.name}».`);
   }
 }
 async function persistFiles(env, userId, chatId, files) {
@@ -222,6 +225,27 @@ async function callGemini(env, history, message, files, thinking, instructions) 
   const contents = history.slice(-24).map((entry) => ({ role: entry.role === "assistant" ? "model" : "user", parts: [{ text: entry.content || "(вложение)" }] }));
   contents.push({ role: "user", parts: geminiParts(message, files) });
   return callGeminiWithFallback(env, { contents, systemInstruction: { parts: [{ text: instructions }] }, generationConfig: { thinkingConfig: { thinkingLevel: thinking }, maxOutputTokens: 8192 } }, "\n", "Модель не вернула текстовый ответ. Попробуйте ещё раз.");
+}
+async function callOpenRouter(env, model, history, message, files, thinking, instructions) {
+  if (!env.OPENROUTER_API_KEY) throw new Error("Ключ OpenRouter ещё не добавлен в Worker.");
+  const prompt = [message || "Проанализируй приложенный файл.", ...files.filter(isTextFile).map((file) => `Файл «${file.name}»:\n${decodeBase64(file.data)}`)].join("\n\n");
+  const images = files.filter((file) => !isTextFile(file)).map((file) => ({ type: "image_url", image_url: { url: `data:${file.type};base64,${file.data}` } }));
+  const messages = [{ role: "system", content: instructions }, ...history.slice(-24).map((entry) => ({ role: entry.role, content: entry.content || "(вложение)" })), { role: "user", content: images.length ? [{ type: "text", text: prompt }, ...images] : prompt }];
+  const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${env.OPENROUTER_API_KEY}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ model: OPENROUTER_MODELS[model], messages, reasoning: { effort: thinking }, max_tokens: 4096 }),
+  });
+  let data;
+  try { data = await response.json(); } catch { throw new Error("OpenRouter вернул некорректный ответ."); }
+  if (!response.ok) {
+    if (response.status === 429 && data.error?.metadata?.limit_source === "upstream_provider_shared_pool") throw new Error("Бесплатный сервер этой модели временно перегружен. Попробуйте позже.");
+    throw new Error(`OpenRouter: ${data.error?.message || `ошибка ${response.status}`}`);
+  }
+  const content = data.choices?.[0]?.message?.content;
+  const answer = (typeof content === "string" ? content : Array.isArray(content) ? content.map((part) => part.text || "").join("\n") : "").trim();
+  if (!answer) throw new Error("Модель не вернула текстовый ответ. Попробуйте ещё раз.");
+  return answer;
 }
 function rowToChat(row) {
   let messages;
@@ -393,7 +417,9 @@ async function handleApi(request, env) {
       const memory = !temporary && user.memory_enabled ? await memoryFor(env.DB, user.id, chatId, content) : "";
       const instructions = instructionsFor(user, memory);
       const modelFiles = files.length || temporary ? files : await priorFilesForContext(env, user.id, fullHistory, content);
-      const { answer, citations } = model === "gpt-6-luna" ? await callOpenAI(env, history, content, modelFiles, thinking, instructions, webSearch) : { answer: await callGemini(env, history, content, modelFiles, thinking, instructions), citations: [] };
+      const { answer, citations } = model === "gpt-6-luna"
+        ? await callOpenAI(env, history, content, modelFiles, thinking, instructions, webSearch)
+        : { answer: model === "gemini-3.8-flash" ? await callGemini(env, history, content, modelFiles, thinking, instructions) : await callOpenRouter(env, model, history, content, modelFiles, thinking, instructions), citations: [] };
       const publicFiles = stored.map(({ id, name, type, size }) => ({ id, name, type, size }));
       if (temporary) return json({ chatId: "temporary", answer, citations, remaining: Math.max(0, settings.daily_limit - count) });
       const messages = [...fullHistory, { role: "user", content, files: publicFiles }, { role: "assistant", content: answer, citations }];

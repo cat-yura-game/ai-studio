@@ -45,7 +45,51 @@ function makeRequest(path, token, method = "GET", body = null, extraHeaders = {}
 
 const TOKEN_A = "a".repeat(43);
 const TOKEN_B = "b".repeat(43);
-const env = (db) => ({ DB: db, ALLOWED_ORIGIN: "https://site.example.test", OPENAI_API_KEY: "test-openai", GEMINI_API_KEY: "test-gemini", LUNA_ENABLED: "true" });
+const env = (db) => ({ DB: db, ALLOWED_ORIGIN: "https://site.example.test", OPENAI_API_KEY: "test-openai", GEMINI_API_KEY: "test-gemini", OPENROUTER_API_KEY: "test-openrouter", LUNA_ENABLED: "true" });
+
+test("OpenRouter models use their own IDs, thinking levels, and supported attachments", async (context) => {
+  const db = database();
+  setupUser(db, "router-user", TOKEN_A);
+  const requests = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, options) => {
+    requests.push({ url: String(url), authorization: options.headers.Authorization, body: JSON.parse(options.body) });
+    return Response.json({ choices: [{ message: { content: "Ответ модели" } }] });
+  };
+  context.after(() => { globalThis.fetch = originalFetch; db.sqlite.close(); });
+  const environment = env(db);
+  const textFile = { name: "note.txt", type: "text/plain", size: 6, data: Buffer.from("Привет").toString("base64") };
+  const nemotron = await worker.fetch(makeRequest("/api/chat", TOKEN_A, "POST", { temporary: true, model: "nemotron-3-ultra", thinking: "high", content: "Прочти", files: [textFile] }), environment);
+  assert.equal(nemotron.status, 200);
+  assert.equal((await nemotron.json()).answer, "Ответ модели");
+  assert.equal(requests[0].url, "https://openrouter.ai/api/v1/chat/completions");
+  assert.equal(requests[0].authorization, "Bearer test-openrouter");
+  assert.equal(requests[0].body.model, "nvidia/nemotron-3-ultra-550b-a55b:free");
+  assert.deepEqual(requests[0].body.reasoning, { effort: "high" });
+  assert.match(requests[0].body.messages.at(-1).content, /Файл «note\.txt»:.*Привет/s);
+  const image = { name: "picture.png", type: "image/png", size: 3, data: Buffer.from("png").toString("base64") };
+  const qwen = await worker.fetch(makeRequest("/api/chat", TOKEN_A, "POST", { temporary: true, model: "qwen3.8-27b", thinking: "none", content: "Опиши", files: [image] }), environment);
+  assert.equal(qwen.status, 200);
+  assert.equal(requests[1].body.model, "qwen/qwen3.8-27b:free");
+  assert.deepEqual(requests[1].body.reasoning, { effort: "none" });
+  assert.equal(requests[1].body.messages.at(-1).content[1].image_url.url, "data:image/png;base64,cG5n");
+  const rejected = await worker.fetch(makeRequest("/api/chat", TOKEN_A, "POST", { temporary: true, model: "nemotron-3-ultra", thinking: "low", content: "Опиши", files: [image] }), environment);
+  assert.equal(rejected.status, 400);
+  assert.equal(requests.length, 2);
+  assert.equal(db.sqlite.prepare("SELECT count FROM usage WHERE user_id = 'router-user'").get().count, 2);
+});
+
+test("upstream free-model rate limits are explained and do not spend daily quota", async (context) => {
+  const db = database();
+  setupUser(db, "rate-limited-user", TOKEN_A);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => Response.json({ error: { message: "Provider returned error", metadata: { limit_source: "upstream_provider_shared_pool" } } }, { status: 429 });
+  context.after(() => { globalThis.fetch = originalFetch; db.sqlite.close(); });
+  const response = await worker.fetch(makeRequest("/api/chat", TOKEN_A, "POST", { temporary: true, model: "qwen3.8-27b", thinking: "low", content: "Привет", files: [] }), env(db));
+  assert.equal(response.status, 502);
+  assert.match((await response.json()).error, /Бесплатный сервер.*временно перегружен/);
+  assert.equal(db.sqlite.prepare("SELECT count FROM usage WHERE user_id = 'rate-limited-user'").get().count, 0);
+});
 
 test("daily quota rolls over at midnight in Moscow", () => {
   const before = Date.parse("2026-09-26T20:59:59Z");
