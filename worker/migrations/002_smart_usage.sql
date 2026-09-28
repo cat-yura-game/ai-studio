@@ -1,0 +1,7 @@
+CREATE TABLE IF NOT EXISTS smart_usage (
+  user_id TEXT NOT NULL,
+  day TEXT NOT NULL,
+  count INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (user_id, day),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);

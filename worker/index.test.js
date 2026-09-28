@@ -12,6 +12,7 @@ function database() {
     INSERT INTO settings VALUES (1, 30, 7, 3, 1);
     CREATE TABLE chats (id TEXT PRIMARY KEY, user_id TEXT, title TEXT, model TEXT, messages_json TEXT, updated_at INTEGER);
     CREATE TABLE usage (user_id TEXT, day TEXT, count INTEGER, PRIMARY KEY(user_id,day));
+    CREATE TABLE smart_usage (user_id TEXT, day TEXT, count INTEGER, PRIMARY KEY(user_id,day));
     CREATE TABLE files (id TEXT PRIMARY KEY, user_id TEXT, chat_id TEXT, name TEXT, mime TEXT, size INTEGER, r2_key TEXT, created_at INTEGER);
   `);
   return {
@@ -88,6 +89,47 @@ test("Luna and Sol use router.cheap and are available for new chats", async (con
   }
   assert.deepEqual(requests.map((request) => request.body.model), ["gpt-6-luna", "gpt-6-sol"]);
   assert.ok(requests.every((request) => request.url === "https://router.cheap/v1/responses" && request.authorization === "Bearer test-router-cheap"));
+});
+
+test("Astra and Sol share five daily requests without using the ordinary limit", async (context) => {
+  const db = database();
+  setupUser(db, "smart-user", TOKEN_A);
+  db.sqlite.exec("UPDATE settings SET daily_limit = 1");
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => Response.json({ output: [{ content: [{ type: "output_text", text: "Готово" }] }] });
+  context.after(() => { globalThis.fetch = originalFetch; db.sqlite.close(); });
+  for (let index = 0; index < 5; index++) {
+    const model = index % 2 ? "gpt-6-sol" : "gpt-6-astra";
+    const response = await worker.fetch(makeRequest("/api/chat", TOKEN_A, "POST", { temporary: true, model, thinking: "low", content: "Привет", files: [] }), env(db));
+    assert.equal(response.status, 200);
+    const result = await response.json();
+    assert.equal(result.smartRemaining, 4 - index);
+    assert.equal(result.remaining, 1);
+  }
+  const blocked = await worker.fetch(makeRequest("/api/chat", TOKEN_A, "POST", { temporary: true, model: "gpt-6-astra", thinking: "low", content: "Ещё", files: [] }), env(db));
+  assert.equal(blocked.status, 429);
+  assert.match((await blocked.json()).error, /Astra и Sol/);
+  const ordinary = await worker.fetch(makeRequest("/api/chat", TOKEN_A, "POST", { temporary: true, model: "gpt-6-luna", thinking: "low", content: "Обычный запрос", files: [] }), env(db));
+  assert.equal(ordinary.status, 200);
+  const me = await (await worker.fetch(makeRequest("/api/me", TOKEN_A), env(db))).json();
+  assert.equal(me.remaining, 0);
+  assert.equal(me.smartRemaining, 0);
+  assert.equal(me.smartLimit, 5);
+  assert.equal(db.sqlite.prepare("SELECT count FROM usage WHERE user_id = 'smart-user'").get().count, 1);
+  assert.equal(db.sqlite.prepare("SELECT count FROM smart_usage WHERE user_id = 'smart-user'").get().count, 5);
+});
+
+test("failed smart-model requests return their separate allowance", async (context) => {
+  const db = database();
+  setupUser(db, "smart-failure", TOKEN_A);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => Response.json({ error: { message: "Provider unavailable" } }, { status: 503 });
+  context.after(() => { globalThis.fetch = originalFetch; db.sqlite.close(); });
+  const response = await worker.fetch(makeRequest("/api/chat", TOKEN_A, "POST", { temporary: true, model: "gpt-6-sol", thinking: "low", content: "Привет", files: [] }), env(db));
+  assert.equal(response.status, 502);
+  const me = await (await worker.fetch(makeRequest("/api/me", TOKEN_A), env(db))).json();
+  assert.equal(me.smartRemaining, 5);
+  assert.equal(me.remaining, 30);
 });
 
 test("OpenRouter models use their own IDs, thinking levels, and supported attachments", async (context) => {

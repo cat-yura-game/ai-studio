@@ -26,6 +26,8 @@ const state = {
   files: [],
   remaining: 30,
   limit: 30,
+  smartRemaining: 5,
+  smartLimit: 5,
   resetBalance: 0,
   resetCap: 3,
   resetIntervalDays: 7,
@@ -42,6 +44,7 @@ function currentChat() { return state.currentId === "temporary" ? state.tempChat
 function selectedModel() { return MODELS.find((model) => model.id === state.model) || { id: state.model, name: `${currentChat()?.modelName || "Модель"} · недоступна` }; }
 function modelAvailable(id) { return MODELS.some((model) => model.id === id && !model.disabled); }
 function selectedThinking() { return state.thinking[state.model] || "medium"; }
+function isSmartModel(model) { return model === "gpt-6-astra" || model === "gpt-6-sol"; }
 function apiUrl(path) { return `${state.apiUrl}${path}`; }
 function showToast(message) {
   const toast = $("toast");
@@ -96,6 +99,8 @@ async function connect(askForName = true) {
     state.connected = true;
     state.remaining = profile.remaining;
     state.limit = profile.limit;
+    state.smartRemaining = profile.smartRemaining;
+    state.smartLimit = profile.smartLimit;
     state.resetBalance = profile.resetBalance;
     state.resetCap = profile.resetCap;
     state.resetIntervalDays = profile.resetIntervalDays;
@@ -127,6 +132,8 @@ async function refreshDailyLimit() {
     const profile = await api("/api/me");
     state.remaining = profile.remaining;
     state.limit = profile.limit;
+    state.smartRemaining = profile.smartRemaining;
+    state.smartLimit = profile.smartLimit;
     state.resetBalance = profile.resetBalance;
     state.nextResetAt = profile.nextResetAt;
     state.nextDailyResetAt = profile.nextDailyResetAt;
@@ -146,9 +153,12 @@ document.addEventListener("visibilitychange", () => {
 });
 function renderQuota() {
   const percent = Math.max(0, Math.min(100, Math.round((state.remaining / Math.max(1, state.limit)) * 100)));
-  $("quotaPercent").textContent = state.connected ? `${percent}%` : "—";
-  $("quotaFill").style.width = state.connected ? `${percent}%` : "0%";
-  $("quotaText").textContent = state.connected ? `${percent}% лимита осталось` : "Откройте личную ссылку";
+  const smartPercent = Math.max(0, Math.min(100, Math.round((state.smartRemaining / Math.max(1, state.smartLimit)) * 100)));
+  const smart = isSmartModel(state.model);
+  $("quotaLabel").textContent = smart ? "Лимит Astra и Sol" : "Дневной лимит";
+  $("quotaPercent").textContent = state.connected ? `${smart ? smartPercent : percent}%` : "—";
+  $("quotaFill").style.width = state.connected ? `${smart ? smartPercent : percent}%` : "0%";
+  $("quotaText").textContent = state.connected ? `${smart ? smartPercent : percent}% лимита осталось` : "Откройте личную ссылку";
   $("modePill").textContent = state.connected ? "Бета" : "Доступ по ссылке";
   if (state.currentId === "temporary") $("modePill").textContent = "Временный чат";
   $("planLabel").textContent = state.connected ? "Бета · личный доступ" : "Требуется вход";
@@ -157,6 +167,10 @@ function renderQuota() {
   $("welcomeText").textContent = state.connected ? "Выберите модель и напишите сообщение. История синхронизируется по вашей личной ссылке." : "Выберите модель и напишите сообщение. Для реальных ответов потребуется личная ссылка доступа.";
   $("limitsNumber").textContent = state.connected ? `${percent}%` : "—";
   $("limitsFill").style.width = state.connected ? `${percent}%` : "0%";
+  $("limitsCaption").textContent = state.connected ? `осталось ${state.remaining} из ${state.limit} запросов сегодня` : "лимита осталось сегодня";
+  $("smartLimitsNumber").textContent = state.connected ? `${smartPercent}%` : "—";
+  $("smartLimitsFill").style.width = state.connected ? `${smartPercent}%` : "0%";
+  $("smartLimitsCaption").textContent = state.connected ? `осталось ${state.smartRemaining} из ${state.smartLimit} запросов сегодня` : "5 запросов в сутки на две модели вместе";
   $("resetBalance").textContent = state.connected ? `${state.resetBalance} из ${state.resetCap}` : "—";
   $("nextResetText").textContent = state.connected ? (state.nextResetAt ? `Начисление: +${state.resetGrantAmount} каждые ${state.resetIntervalDays} дн. Следующее — ${new Date(state.nextResetAt).toLocaleString("ru-RU")}.` : "Запас сбросов заполнен.") : "Подключите личную ссылку, чтобы увидеть сбросы.";
   $("useResetButton").disabled = !state.connected || state.resetBalance < 1 || state.remaining >= state.limit;
@@ -383,7 +397,7 @@ async function toggleVoice() {
   if (voiceProcessing || state.busy) return;
   if (!state.connected) { showToast("Для голосового ввода нужна личная ссылка доступа."); openSettings(); return; }
   if (selectedModel().disabled) { showToast("GPT-6 Luna: технические работы."); return; }
-  if (state.remaining <= 0) { showToast("Дневной лимит исчерпан. Попробуйте завтра."); return; }
+  if ((isSmartModel(state.model) ? state.smartRemaining : state.remaining) <= 0) { showToast(isSmartModel(state.model) ? "Лимит Astra и Sol исчерпан. Попробуйте завтра." : "Дневной лимит исчерпан. Попробуйте завтра."); return; }
   if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) { showToast("Этот браузер не поддерживает запись с микрофона."); return; }
   let stream;
   try {
@@ -408,6 +422,7 @@ async function toggleVoice() {
         if (audio.size > 3 * 1024 * 1024) throw new Error("Запись слишком длинная. Говорите не дольше минуты.");
         const form = new FormData();
         form.set("audio", audio, type.includes("mp4") ? "speech.mp4" : "speech.webm");
+        form.set("model", state.model);
         const result = await api("/api/transcribe", { method: "POST", body: form });
         $("promptInput").value = [$("promptInput").value.trim(), result.text].filter(Boolean).join(" ");
         $("promptInput").dispatchEvent(new Event("input"));
@@ -467,7 +482,7 @@ async function sendMessage() {
   const content = $("promptInput").value.trim();
   const attached = [...state.files];
   if (!content && attached.length === 0) return;
-  if (state.connected && state.remaining <= 0) { showToast("Дневной лимит исчерпан. Попробуйте завтра."); return; }
+  if (state.connected && (isSmartModel(state.model) ? state.smartRemaining : state.remaining) <= 0) { showToast(isSmartModel(state.model) ? "Лимит Astra и Sol исчерпан. Попробуйте завтра." : "Дневной лимит исчерпан. Попробуйте завтра."); return; }
   const chat = currentChat() || { id: id(), title: content.slice(0, 46) || attached[0].name, model: state.model, modelName: selectedModel().name, messages: [], updatedAt: Date.now() };
   if (!currentChat()) { state.chats.unshift(chat); state.currentId = chat.id; }
   const temporary = chat.id === "temporary";
@@ -490,6 +505,7 @@ async function sendMessage() {
       answer = result.answer;
       citations = result.citations || [];
       state.remaining = result.remaining;
+      state.smartRemaining = result.smartRemaining;
       chat.id = result.chatId;
       state.currentId = result.chatId;
       userMessage.files = result.files || userMessage.files;

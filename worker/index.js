@@ -3,6 +3,8 @@ const MAX_FILE_BYTES = 5 * 1024 * 1024;
 const MAX_VOICE_BYTES = 3 * 1024 * 1024;
 const MOSCOW_DATE = new Intl.DateTimeFormat("en-US", { timeZone: "Europe/Moscow", year: "numeric", month: "2-digit", day: "2-digit" });
 const OPENROUTER_MODELS = { "nemotron-3-ultra": "nvidia/nemotron-3-ultra-550b-a55b:free", "qwen3.8-27b": "qwen/qwen3.8-27b:free" };
+const SMART_MODELS = new Set(["gpt-6-astra", "gpt-6-sol"]);
+const SMART_DAILY_LIMIT = 5;
 const ALLOWED_MODELS = new Set(["gpt-6-luna", "gpt-6-sol", "gpt-6-astra", "gemini-3.8-flash", ...Object.keys(OPENROUTER_MODELS)]);
 const DEFAULT_MODEL = "gemini-3.8-flash";
 function modelEnabled(_env, model) { return ALLOWED_MODELS.has(model); }
@@ -143,16 +145,19 @@ async function refreshResets(db, user, settings) {
   return user;
 }
 function nextGrantAt(user, settings) { return user.reset_balance >= settings.reset_cap ? null : user.reset_last_grant_at + settings.reset_interval_days * DAY_MS; }
-async function usageForUser(db, userId) {
-  const record = await db.prepare("SELECT count FROM usage WHERE user_id = ? AND day = ?").bind(userId, dayKey()).first();
+async function usageForUser(db, userId, smart = false) {
+  const table = smart ? "smart_usage" : "usage";
+  const record = await db.prepare(`SELECT count FROM ${table} WHERE user_id = ? AND day = ?`).bind(userId, dayKey()).first();
   return Number(record?.count || 0);
 }
-async function reserveRequest(db, userId, limit, day = dayKey()) {
-  const record = await db.prepare("INSERT INTO usage (user_id, day, count) VALUES (?, ?, 1) ON CONFLICT(user_id, day) DO UPDATE SET count = count + 1 WHERE count < ? RETURNING count").bind(userId, day, limit).first();
+async function reserveRequest(db, userId, limit, day = dayKey(), smart = false) {
+  const table = smart ? "smart_usage" : "usage";
+  const record = await db.prepare(`INSERT INTO ${table} (user_id, day, count) VALUES (?, ?, 1) ON CONFLICT(user_id, day) DO UPDATE SET count = count + 1 WHERE count < ? RETURNING count`).bind(userId, day, limit).first();
   return record ? Number(record.count) : null;
 }
-async function releaseRequest(db, userId, day) {
-  await db.prepare("UPDATE usage SET count = MAX(0, count - 1) WHERE user_id = ? AND day = ?").bind(userId, day).run();
+async function releaseRequest(db, userId, day, smart = false) {
+  const table = smart ? "smart_usage" : "usage";
+  await db.prepare(`UPDATE ${table} SET count = MAX(0, count - 1) WHERE user_id = ? AND day = ?`).bind(userId, day).run();
 }
 async function callGeminiWithFallback(env, payload, separator, emptyMessage) {
   const keys = [...new Set([env.GEMINI_API_KEY, env.GEMINI_API_KEY_BACKUP_1, env.GEMINI_API_KEY_BACKUP_2, env.GEMINI_API_KEY_BACKUP_3].map((key) => String(key || "").trim()).filter(Boolean))];
@@ -290,7 +295,8 @@ async function handleApi(request, env) {
   if (request.method === "GET" && path === "/api/me") {
     const updated = await refreshResets(env.DB, user, settings);
     const used = await usageForUser(env.DB, user.id);
-    return json({ limit: settings.daily_limit, used, remaining: Math.max(0, settings.daily_limit - used), nextDailyResetAt: nextDailyResetAt(), resetBalance: updated.reset_balance, resetCap: settings.reset_cap, resetIntervalDays: settings.reset_interval_days, resetGrantAmount: settings.reset_grant_amount, nextResetAt: nextGrantAt(updated, settings), role: user.role });
+    const smartUsed = await usageForUser(env.DB, user.id, true);
+    return json({ limit: settings.daily_limit, used, remaining: Math.max(0, settings.daily_limit - used), smartLimit: SMART_DAILY_LIMIT, smartUsed, smartRemaining: Math.max(0, SMART_DAILY_LIMIT - smartUsed), nextDailyResetAt: nextDailyResetAt(), resetBalance: updated.reset_balance, resetCap: settings.reset_cap, resetIntervalDays: settings.reset_interval_days, resetGrantAmount: settings.reset_grant_amount, nextResetAt: nextGrantAt(updated, settings), role: user.role });
   }
   if (request.method === "GET" && path === "/api/profile") {
     const defaultModel = modelEnabled(env, user.default_model) ? user.default_model : DEFAULT_MODEL;
@@ -376,8 +382,9 @@ async function handleApi(request, env) {
     const audio = form.get("audio");
     if (!(audio instanceof File) || audio.size < 100 || audio.size > MAX_VOICE_BYTES || !/^(audio\/(webm|mp4|mpeg|wav|x-wav)|video\/mp4)(;|$)/i.test(audio.type)) return safeError("Нужна запись WebM, MP4 или WAV размером до 3 МБ.");
     const day = dayKey();
-    const used = await usageForUser(env.DB, user.id);
-    if (used >= settings.daily_limit) return safeError("Дневной лимит исчерпан. Попробуйте завтра.", 429);
+    const smart = SMART_MODELS.has(form.get("model"));
+    const used = await usageForUser(env.DB, user.id, smart);
+    if (used >= (smart ? SMART_DAILY_LIMIT : settings.daily_limit)) return safeError(smart ? "Лимит Astra и Sol исчерпан. Попробуйте завтра." : "Дневной лимит исчерпан. Попробуйте завтра.", 429);
     await env.DB.prepare("CREATE TABLE IF NOT EXISTS voice_usage (user_id TEXT NOT NULL, day TEXT NOT NULL, count INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (user_id, day), FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE)").run();
     const reserved = await env.DB.prepare("INSERT INTO voice_usage (user_id, day, count) VALUES (?, ?, 1) ON CONFLICT(user_id, day) DO UPDATE SET count = count + 1 WHERE count < ? RETURNING count").bind(user.id, day, settings.daily_limit).first();
     if (!reserved) return safeError("Дневной лимит голосового ввода исчерпан.", 429);
@@ -417,8 +424,9 @@ async function handleApi(request, env) {
     if (!Array.isArray(fullHistory)) fullHistory = [];
     const history = fullHistory.slice(-24).filter((entry) => ["user", "assistant"].includes(entry.role) && typeof entry.content === "string").map((entry) => ({ role: entry.role, content: entry.content.slice(0, 12_000) }));
     const requestDay = dayKey();
-    const count = await reserveRequest(env.DB, user.id, settings.daily_limit, requestDay);
-    if (count === null) return safeError("Дневной лимит исчерпан. Попробуйте завтра.", 429);
+    const smart = SMART_MODELS.has(model);
+    const count = await reserveRequest(env.DB, user.id, smart ? SMART_DAILY_LIMIT : settings.daily_limit, requestDay, smart);
+    if (count === null) return safeError(smart ? "Лимит Astra и Sol исчерпан. Попробуйте завтра." : "Дневной лимит исчерпан. Попробуйте завтра.", 429);
     let stored = [];
     try {
       if (!temporary) stored = await persistFiles(env, user.id, chatId, files);
@@ -429,17 +437,20 @@ async function handleApi(request, env) {
         ? await callOpenAI(env, model, history, content, modelFiles, thinking, instructions, webSearch)
         : { answer: model === "gemini-3.8-flash" ? await callGemini(env, history, content, modelFiles, thinking, instructions) : await callOpenRouter(env, model, history, content, modelFiles, thinking, instructions), citations: [] };
       const publicFiles = stored.map(({ id, name, type, size }) => ({ id, name, type, size }));
-      if (temporary) return json({ chatId: "temporary", answer, citations, remaining: Math.max(0, settings.daily_limit - count) });
+      const otherUsed = await usageForUser(env.DB, user.id, !smart);
+      const remaining = Math.max(0, settings.daily_limit - (smart ? otherUsed : count));
+      const smartRemaining = Math.max(0, SMART_DAILY_LIMIT - (smart ? count : otherUsed));
+      if (temporary) return json({ chatId: "temporary", answer, citations, remaining, smartRemaining });
       const messages = [...fullHistory, { role: "user", content, files: publicFiles }, { role: "assistant", content: answer, citations }];
       const title = existing?.title || content.slice(0, 46) || files[0].name.slice(0, 46);
       await env.DB.prepare("INSERT INTO chats (id, user_id, title, model, messages_json, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET messages_json = excluded.messages_json, updated_at = excluded.updated_at").bind(chatId, user.id, title, model, JSON.stringify(messages), Date.now()).run();
-      return json({ chatId, answer, citations, files: publicFiles, remaining: Math.max(0, settings.daily_limit - count) });
+      return json({ chatId, answer, citations, files: publicFiles, remaining, smartRemaining });
     } catch (error) {
       if (stored.length) {
         await Promise.allSettled(stored.map((file) => fileStore(env).delete(file.key)));
         await Promise.allSettled(stored.map((file) => env.DB.prepare("DELETE FROM files WHERE id = ? AND user_id = ?").bind(file.id, user.id).run()));
       }
-      await releaseRequest(env.DB, user.id, requestDay);
+      await releaseRequest(env.DB, user.id, requestDay, smart);
       return safeError(error.message || "Не удалось получить ответ.", 502);
     }
   }
